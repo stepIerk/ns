@@ -4,6 +4,8 @@ import {
   addDoc,
   collection,
   doc,
+  getDocs,
+  limit,
   limitToLast,
   onSnapshot,
   orderBy,
@@ -13,6 +15,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { getFirebase } from '../lib/firebase';
+import { APP_VERSION } from '../lib/version';
 import { b64ToBytes, decryptBytes, decryptText, encryptBytes, encryptText } from '../lib/crypto';
 import { prepareImage } from '../lib/image';
 import { authedPost } from '../lib/api';
@@ -64,6 +67,15 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
   const [viewer, setViewer] = useState<{ url: string; mime: string } | null>(null);
   const [viewerLoading, setViewerLoading] = useState<string | null>(null);
   const [pushOn, setPushOn] = useState(false);
+  // Диагностика соединения (панель по ?debug=1).
+  const [debugOpen, setDebugOpen] = useState(
+    () => typeof window !== 'undefined' && window.location.search.includes('debug=1'),
+  );
+  const [snapErrCount, setSnapErrCount] = useState(0);
+  const [snapErrLast, setSnapErrLast] = useState<string | null>(null);
+  const [snapCount, setSnapCount] = useState(0);
+  const [ping, setPing] = useState<string | null>(null);
+  const [pingBusy, setPingBusy] = useState(false);
   const keyRef = useRef(roomKey);
   keyRef.current = roomKey;
   const seenPushRef = useRef<Set<string>>(new Set());
@@ -100,6 +112,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
       { includeMetadataChanges: true },
       (snap) => {
         setConn((c) => ({ ...c, fromCache: snap.metadata.fromCache }));
+        setSnapCount((c) => c + 1);
         const key = keyRef.current;
         const docs = snap.docs;
         void (async () => {
@@ -144,7 +157,11 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
           }
         })();
       },
-      (e) => setErr(`Realtime ошибка: ${e.message}`),
+      (e) => {
+        setSnapErrCount((c) => c + 1);
+        setSnapErrLast(`${e.code ?? '?'}: ${e.message}`.slice(0, 300));
+        setErr(`Realtime ошибка: ${e.message}`);
+      },
     );
     return unsub;
   }, [user.uid]);
@@ -353,6 +370,47 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     }
   };
 
+  // Диагностика: изолированно проверяем запись и чтение мимо realtime-стрима.
+  const testWrite = async () => {
+    setPingBusy(true);
+    setPing(null);
+    try {
+      const fb = getFirebase();
+      if (!fb) throw new Error('Firebase не настроен');
+      const t0 = Date.now();
+      await withTimeout(
+        setDoc(doc(fb.db, 'debug-ping', user.uid), { ts: serverTimestamp(), v: APP_VERSION }),
+        20000,
+      );
+      setPing(`WRITE OK за ${Date.now() - t0}мс`);
+    } catch (e) {
+      setPing(`WRITE FAIL: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setPingBusy(false);
+    }
+  };
+
+  const testRead = async () => {
+    setPingBusy(true);
+    setPing(null);
+    try {
+      const fb = getFirebase();
+      if (!fb) throw new Error('Firebase не настроен');
+      const t0 = Date.now();
+      const s = await withTimeout(
+        getDocs(query(collection(fb.db, 'rooms', 'main', 'messages'), limit(1))),
+        20000,
+      );
+      setPing(
+        `READ OK за ${Date.now() - t0}мс, fromCache=${s.metadata.fromCache}, docs=${s.size}`,
+      );
+    } catch (e) {
+      setPing(`READ FAIL: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setPingBusy(false);
+    }
+  };
+
   const visible = [...messages, ...pending].sort((a, b) => a.createdAtMs - b.createdAtMs);
   const offline = !conn.online || conn.fromCache;
 
@@ -362,16 +420,36 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         <div>
           <strong>main</strong>
           <span className="muted"> · {user.email}</span>
+          <span className="muted small"> · v{APP_VERSION}</span>
         </div>
         <div className="row">
           <button onClick={onShowKey}>QR ключа</button>
           <button onClick={togglePush}>{pushOn ? 'Push: вкл' : 'Push: выкл'}</button>
+          <button onClick={() => setDebugOpen((v) => !v)}>⚙</button>
           <button onClick={onLogout}>Выйти</button>
         </div>
       </header>
 
       {offline && <div className="banner">Офлайн / переподключение… сообщения отправятся при связи</div>}
       {err && <div className="error">{err}</div>}
+      {debugOpen && (
+        <div className="card" style={{ margin: 8 }}>
+          <div className="small">
+            online={String(conn.online)} fromCache={String(conn.fromCache)} snapshots={snapCount}{' '}
+            snapErrors={snapErrCount} msgs={messages.length} pending={pending.length}
+          </div>
+          {snapErrLast && <div className="small">last snap err: {snapErrLast}</div>}
+          <div className="row">
+            <button disabled={pingBusy} onClick={() => void testWrite()}>
+              Тест записи
+            </button>
+            <button disabled={pingBusy} onClick={() => void testRead()}>
+              Тест чтения
+            </button>
+          </div>
+          {ping && <div className="small">{ping}</div>}
+        </div>
+      )}
 
       <div className="list">
         {visible.map((m) => {
