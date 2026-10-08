@@ -78,6 +78,9 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
   const keyRef = useRef(roomKey);
   keyRef.current = roomKey;
   const seenPushRef = useRef<Set<string>>(new Set());
+  // Гард от feedback-loop "snapshot -> write -> snapshot -> write":
+  // deliveredAt/readAt пишем строго один раз на doc.id.
+  const markedRef = useRef<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -99,9 +102,13 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
 
   // Realtime через Firestore onSnapshot (как в рабочей Vercel-версии).
   // Yandex-функция в доставке не участвует — только фото (Drive) и пуши.
+  // Важно: без includeMetadataChanges и без записей внутри колбэка расшифровки.
+  // deliveredAt/readAt пишем один раз на doc.id одним updateDoc — иначе каждая
+  // запись порождает новый снапшот и получаются бесконечные POST в Write/channel.
   useEffect(() => {
     const fb = getFirebase();
     if (!fb) return;
+    markedRef.current.clear();
     const q = query(
       collection(fb.db, 'rooms', 'main', 'messages'),
       orderBy('clientTs', 'asc'),
@@ -109,12 +116,41 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     );
     const unsub = onSnapshot(
       q,
-      { includeMetadataChanges: true },
       (snap) => {
         setConn((c) => ({ ...c, fromCache: snap.metadata.fromCache }));
         setSnapCount((c) => c + 1);
         const key = keyRef.current;
         const docs = snap.docs;
+        // delivered/read для входящих: собираем синхронно, пишем асинхронно.
+        // - скипаем собственные сообщения и локальные pending-записи;
+        // - один updateDoc на сообщение (deliveredAt + readAt сразу);
+        // - повторный снапшот от нашей же записи игнорим через markedRef.
+        const toMark: Array<{ d: (typeof docs)[number]; patch: Record<string, unknown> }> = [];
+        for (const d of docs) {
+          if (d.metadata.hasPendingWrites) continue;
+          const v = d.data() as MessageDoc;
+          if (v.senderId === user.uid) continue;
+          if (v.deliveredAt && v.readAt) continue;
+          if (markedRef.current.has(d.id)) continue;
+          const patch: Record<string, unknown> = {};
+          if (!v.deliveredAt) patch.deliveredAt = serverTimestamp();
+          if (!v.readAt) patch.readAt = serverTimestamp();
+          if (Object.keys(patch).length === 0) continue;
+          markedRef.current.add(d.id);
+          toMark.push({ d, patch });
+        }
+        if (toMark.length > 0) {
+          void (async () => {
+            for (const m of toMark) {
+              try {
+                await updateDoc(m.d.ref, m.patch);
+              } catch {
+                // rules/offline — убираем из гарда, попробуем на следующем снапшоте
+                markedRef.current.delete(m.d.id);
+              }
+            }
+          })();
+        }
         void (async () => {
           const out: ChatMessage[] = [];
           for (const d of docs) {
@@ -144,17 +180,6 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
             out.push(base);
           }
           setMessages(out);
-          // delivered/read для входящих
-          for (const d of docs) {
-            const v = d.data() as MessageDoc;
-            if (v.senderId === user.uid) continue;
-            try {
-              if (!v.deliveredAt) await updateDoc(d.ref, { deliveredAt: serverTimestamp() });
-              else if (!v.readAt) await updateDoc(d.ref, { readAt: serverTimestamp() });
-            } catch {
-              // rules/offline — игнорируем, попробуем позже
-            }
-          }
         })();
       },
       (e) => {
