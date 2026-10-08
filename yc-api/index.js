@@ -1,9 +1,9 @@
 // Yandex Cloud Function ns-api — единая точка API мессенджера.
-// Роуты:
-//   GET  /health (и /api/health) — публично, только наличие env
-//   POST /api/media/upload-init {mediaId, mimeType, size} → {sessionUrl}
-//   POST /api/media/download {driveFileId, start?, end?} → {data: base64, total}
-//   POST /api/push {messageId} → {ok: true}
+// Invoke-URL Яндекса не маршрутизирует по пути (всё после ID функции — ошибка),
+// поэтому: GET корня = health, POST корня с полем action в теле:
+//   {action:'media.upload-init', mediaId, mimeType, size} → {sessionUrl}
+//   {action:'media.download', driveFileId, start?, end?} → {data: base64, total}
+//   {action:'push', messageId} → {ok: true}
 // Все POST требуют Authorization: Bearer <Firebase ID token>, UID в ALLOWED_UIDS.
 const { handleCors } = require('./lib/cors');
 const { requireUid } = require('./lib/auth');
@@ -38,15 +38,6 @@ function parseBody(event) {
   }
 }
 
-function pathOf(event) {
-  const raw = event.path || (event.http && event.http.path) || event.url || '/';
-  return String(raw).split('?')[0].replace(/\/+$/, '') || '/';
-}
-
-function endsWith(path, suffix) {
-  return path === suffix || path.endsWith(suffix);
-}
-
 async function health(corsHeaders) {
   const has = (n) => !!process.env[n];
   return json(200, {
@@ -65,7 +56,7 @@ async function health(corsHeaders) {
 
 async function uploadInit(event, corsHeaders) {
   const uid = await requireUid(event.headers || {});
-  const body = parseBody(event);
+  const body = event.parsedBody || parseBody(event);
   const { mediaId, mimeType, size } = body;
   if (!mediaId || typeof mediaId !== 'string' || mediaId.length > 100) {
     return json(400, { error: 'bad mediaId' }, corsHeaders);
@@ -83,7 +74,7 @@ async function uploadInit(event, corsHeaders) {
 
 async function download(event, corsHeaders) {
   await requireUid(event.headers || {});
-  const body = parseBody(event);
+  const body = event.parsedBody || parseBody(event);
   const { driveFileId } = body;
   let { start, end } = body;
   if (typeof start !== 'number' || typeof end !== 'number' || start < 0 || end < start || end - start + 1 > CHUNK_BYTES) {
@@ -97,7 +88,7 @@ async function download(event, corsHeaders) {
 
 async function push(event, corsHeaders) {
   const uid = await requireUid(event.headers || {});
-  const { messageId } = parseBody(event);
+  const { messageId } = event.parsedBody || parseBody(event);
   if (!messageId || typeof messageId !== 'string') {
     return json(400, { error: 'bad messageId' }, corsHeaders);
   }
@@ -135,7 +126,6 @@ async function push(event, corsHeaders) {
 
 module.exports.handler = async function (event, context) {
   const method = event.httpMethod || (event.http && event.http.method) || 'GET';
-  const path = pathOf(event);
   const headers = event.headers || {};
 
   const cors = handleCors(method, headers);
@@ -143,15 +133,16 @@ module.exports.handler = async function (event, context) {
   const corsHeaders = cors.headers;
 
   try {
-    if (method === 'GET' && (path === '/health' || endsWith(path, '/api/health') || path === '/')) {
-      if (path === '/') return json(200, { ok: true, routes: ['GET /health', 'POST /api/media/upload-init', 'POST /api/media/download', 'POST /api/push'] }, corsHeaders);
-      return await health(corsHeaders);
-    }
+    // GET корня = health (заодно канарейка: раз ответил — все импорты встали).
+    if (method === 'GET') return await health(corsHeaders);
     if (method !== 'POST') return json(405, { error: 'Method not allowed' }, corsHeaders);
-    if (endsWith(path, '/api/media/upload-init')) return await uploadInit(event, corsHeaders);
-    if (endsWith(path, '/api/media/download')) return await download(event, corsHeaders);
-    if (endsWith(path, '/api/push')) return await push(event, corsHeaders);
-    return json(404, { error: 'not found' }, corsHeaders);
+    const body = parseBody(event);
+    event.parsedBody = body;
+    const action = body.action;
+    if (action === 'media.upload-init') return await uploadInit(event, corsHeaders);
+    if (action === 'media.download') return await download(event, corsHeaders);
+    if (action === 'push') return await push(event, corsHeaders);
+    return json(404, { error: 'unknown action' }, corsHeaders);
   } catch (e) {
     return json(errStatus(e), { error: e instanceof Error ? e.message : 'Server error' }, corsHeaders);
   }
