@@ -51,7 +51,13 @@ export function getFirebase(): { app: FirebaseApp; auth: Auth; db: Firestore } |
     });
   }
   try {
-    db = initializeFirestore(app, { localCache: persistentLocalCache() });
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache(),
+      // Стриминг WebChannel режется middlebox'ами (РФ): ответы теряют CORS
+      // и SDK бесконечно переподключается. Long-polling через такие сети проходит.
+      experimentalForceLongPolling: true,
+      useFetchStreams: false,
+    });
   } catch {
     db = getFirestore(app);
   }

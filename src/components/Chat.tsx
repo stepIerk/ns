@@ -28,6 +28,19 @@ interface Props {
 
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const DOWNLOAD_CHUNK = 1024 * 1024; // 1МБ — чанки прокси-скачивания с Drive
+// Запись в Firestore может висеть вечно при рваном канале (РФ): режем таймаутом,
+// чтобы вместо бесконечного `sending` показать ошибку с кнопкой повтора.
+const WRITE_TIMEOUT_MS = 30000;
+
+function withTimeout<T>(p: Promise<T>, ms = WRITE_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Превышено ожидание ответа (${ms / 1000}с) — проверь соединение`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 function tsOf(d: MessageDoc): number {
   if (typeof d.clientTs === 'number') return d.clientTs;
@@ -174,7 +187,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
       const fb = getFirebase();
       if (!fb) throw new Error('Firebase не настроен');
       // защита от дубля: не отправляем дважды один clientMessageId
-      const ref = await addDoc(collection(fb.db, 'rooms', 'main', 'messages'), {
+      const ref = await withTimeout(addDoc(collection(fb.db, 'rooms', 'main', 'messages'), {
         clientMessageId,
         senderId: user.uid,
         createdAt: serverTimestamp(),
@@ -182,7 +195,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         kind: 'text',
         ciphertext: ctB64,
         iv: ivB64,
-      } satisfies MessageDoc);
+      } satisfies MessageDoc));
       setPending((p) => p.filter((m) => m.clientMessageId !== clientMessageId));
       void firePush(ref.id);
     } catch (e2) {
@@ -237,7 +250,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
       if (!meta.id) throw new Error('Drive не вернул id файла');
       const fb = getFirebase();
       if (!fb) throw new Error('Firebase не настроен');
-      await setDoc(doc(fb.db, 'media', mediaId), {
+      await withTimeout(setDoc(doc(fb.db, 'media', mediaId), {
         messageId: clientMessageId,
         driveFileId: meta.id,
         size: cipher.byteLength,
@@ -245,8 +258,8 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         iv: ivB64,
         senderId: user.uid,
         createdAt: serverTimestamp(),
-      });
-      const ref = await addDoc(collection(fb.db, 'rooms', 'main', 'messages'), {
+      }));
+      const ref = await withTimeout(addDoc(collection(fb.db, 'rooms', 'main', 'messages'), {
         clientMessageId,
         senderId: user.uid,
         createdAt: serverTimestamp(),
@@ -257,7 +270,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         mimeType: mime,
         size: cipher.byteLength,
         iv: ivB64,
-      } satisfies MessageDoc);
+      } satisfies MessageDoc));
       void firePush(ref.id);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Не удалось отправить фото');
