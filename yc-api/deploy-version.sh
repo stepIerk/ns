@@ -1,13 +1,13 @@
 #!/bin/bash
 # Деплой новой версии кода ns-api (env каждый раз передаём явно,
 # иначе версия создастся с пустым окружением).
-# Секреты читаются из yc-api/.env.local (не в git).
+# Секреты читаются из yc-api/env.local (не в git).
 set -e
 cd "$(dirname "$0")"
 
-[ -f .env.local ] || { echo "Нет yc-api/.env.local — скопируй из .env.local.example и заполни"; exit 1; }
+[ -f env.local ] || { echo "Нет yc-api/.env.local — скопируй из .env.local.example и заполни"; exit 1; }
 # shellcheck disable=SC1091
-set -a; . ./.env.local; set +a
+set -a; . ./env.local; set +a
 
 [ -f ns-api.zip ] || { echo "Нет ns-api.zip — сначала ./deploy.sh"; exit 1; }
 
