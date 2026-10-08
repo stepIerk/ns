@@ -1,4 +1,5 @@
-import { isoNow, restDelete, restSet } from './rest';
+import { doc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { getFirebase } from './firebase';
 
 function urlBase64ToUint8Array(base64: string): Uint8Array {
   const padding = '='.repeat((4 - (base64.length % 4)) % 4);
@@ -37,11 +38,13 @@ export async function enablePush(uid: string): Promise<void> {
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(vapid) as unknown as ArrayBuffer,
   });
-  await restSet(`pushSubscriptions/${uid}`, {
-    subscription: sub.toJSON(),
-    updatedAt: isoNow(),
-    userAgent: navigator.userAgent,
-  });
+  const fb = getFirebase();
+  if (!fb) throw new Error('Firebase не настроен');
+  await setDoc(
+    doc(fb.db, 'pushSubscriptions', uid),
+    { subscription: sub.toJSON(), updatedAt: serverTimestamp(), userAgent: navigator.userAgent },
+    { merge: true },
+  );
 }
 
 export async function disablePush(uid: string): Promise<void> {
@@ -52,10 +55,13 @@ export async function disablePush(uid: string): Promise<void> {
   } catch {
     // ignore
   }
-  try {
-    await restDelete(`pushSubscriptions/${uid}`);
-  } catch {
-    // ignore
+  const fb = getFirebase();
+  if (fb) {
+    try {
+      await deleteDoc(doc(fb.db, 'pushSubscriptions', uid));
+    } catch {
+      // ignore
+    }
   }
 }
 
