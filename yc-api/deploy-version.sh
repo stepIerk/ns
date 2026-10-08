@@ -5,7 +5,7 @@
 set -e
 cd "$(dirname "$0")"
 
-[ -f env.local ] || { echo "Нет yc-api/.env.local — скопируй из .env.local.example и заполни"; exit 1; }
+[ -f env.local ] || { echo "Нет yc-api/env.local — скопируй из env.local.example и заполни"; exit 1; }
 # shellcheck disable=SC1091
 set -a; . ./env.local; set +a
 
