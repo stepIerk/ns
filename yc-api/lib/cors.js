@@ -8,9 +8,22 @@ function configuredOrigins() {
     .filter(Boolean);
 }
 
+// Яндекс (в отличие от Vercel) может отдавать заголовки с исходным
+// регистром (Origin вместо origin) — ищем регистронезависимо.
+function getHeader(headers, name) {
+  const lower = name.toLowerCase();
+  for (const k of Object.keys(headers || {})) {
+    if (k.toLowerCase() === lower) {
+      const v = headers[k];
+      return Array.isArray(v) ? v.join(', ') : String(v || '');
+    }
+  }
+  return '';
+}
+
 // Возвращает заголовки для ответа; handled=true — preflight уже отвечен.
 function handleCors(method, headers) {
-  const origin = (headers.origin || '').replace(/\/+$/, '');
+  const origin = getHeader(headers, 'origin').replace(/\/+$/, '');
   const allowed = origin !== '' && configuredOrigins().includes(origin);
   const out = {};
   if (allowed) {

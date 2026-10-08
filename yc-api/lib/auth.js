@@ -1,8 +1,16 @@
 // Проверка Firebase ID token + allowlist из двух UID.
 const { allowedUids, verifyIdToken } = require('./firestore');
 
+function getHeader(headers, name) {
+  const lower = name.toLowerCase();
+  for (const k of Object.keys(headers || {})) {
+    if (k.toLowerCase() === lower) return String(headers[k] || '');
+  }
+  return '';
+}
+
 async function requireUid(headers) {
-  const h = headers.authorization || headers.Authorization || '';
+  const h = getHeader(headers, 'authorization');
   const token = h.startsWith('Bearer ') ? h.slice(7) : '';
   if (!token) throw Object.assign(new Error('Missing token'), { status: 401 });
   const decoded = await verifyIdToken(token);
