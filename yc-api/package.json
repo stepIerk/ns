@@ -8,8 +8,8 @@
     "node": "22.x"
   },
   "dependencies": {
-    "firebase-admin": "^12.7.0",
     "googleapis": "^140.0.0",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "jsonwebtoken": "^9.0.2"
   }
 }

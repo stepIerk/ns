@@ -7,7 +7,7 @@
 // Все POST требуют Authorization: Bearer <Firebase ID token>, UID в ALLOWED_UIDS.
 const { handleCors } = require('./lib/cors');
 const { requireUid } = require('./lib/auth');
-const { admin, allowedUids } = require('./lib/firebaseAdmin');
+const { allowedUids, getDoc, deleteDoc } = require('./lib/firestore');
 const { initResumableUpload, downloadBytes } = require('./lib/drive');
 const webpush = require('web-push');
 
@@ -101,16 +101,15 @@ async function push(event, corsHeaders) {
   if (!messageId || typeof messageId !== 'string') {
     return json(400, { error: 'bad messageId' }, corsHeaders);
   }
-  const { db } = admin();
-  const msgSnap = await db.doc(`rooms/main/messages/${messageId}`).get();
+  const msgSnap = await getDoc(`rooms/main/messages/${messageId}`);
   if (!msgSnap.exists) return json(404, { error: 'message not found' }, corsHeaders);
-  const msg = msgSnap.data() || {};
+  const msg = msgSnap.data || {};
   if (msg.senderId !== uid) return json(403, { error: 'not your message' }, corsHeaders);
   const peer = allowedUids().find((id) => id !== uid);
   if (!peer) return json(200, { ok: true, skipped: 'no peer' }, corsHeaders);
-  const subSnap = await db.doc(`pushSubscriptions/${peer}`).get();
+  const subSnap = await getDoc(`pushSubscriptions/${peer}`);
   if (!subSnap.exists) return json(200, { ok: true, skipped: 'no subscription' }, corsHeaders);
-  const sub = (subSnap.data() || {}).subscription;
+  const sub = (subSnap.data || {}).subscription;
   if (!sub || !sub.endpoint) return json(200, { ok: true, skipped: 'bad subscription' }, corsHeaders);
   const pub = process.env.VAPID_PUBLIC_KEY || '';
   const priv = process.env.VAPID_PRIVATE_KEY || '';
@@ -126,7 +125,7 @@ async function push(event, corsHeaders) {
   } catch (e) {
     const status = e && e.statusCode;
     if (status === 404 || status === 410) {
-      await db.doc(`pushSubscriptions/${peer}`).delete().catch(() => {});
+      await deleteDoc(`pushSubscriptions/${peer}`).catch(() => {});
       return json(200, { ok: true, cleaned: true }, corsHeaders);
     }
     throw e;
