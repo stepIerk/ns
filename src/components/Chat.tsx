@@ -1,21 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
-import {
-  addDoc,
-  collection,
-  doc,
-  getDocs,
-  limit,
-  limitToLast,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-} from 'firebase/firestore';
-import { getFirebase } from '../lib/firebase';
 import { APP_VERSION } from '../lib/version';
+import {
+  isoNow,
+  restCreate,
+  restFetchAll,
+  restNewestTs,
+  restPatch,
+  restSet,
+  type RestDoc,
+} from '../lib/rest';
 import { b64ToBytes, decryptBytes, decryptText, encryptBytes, encryptText } from '../lib/crypto';
 import { prepareImage } from '../lib/image';
 import { authedPost } from '../lib/api';
@@ -98,73 +92,124 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     hasPushSubscription().then(setPushOn).catch(() => {});
   }, []);
 
-  // realtime
+  // Данные через Firestore REST polling (без SDK-стримов: они рвутся по кругу
+  // в части сетей, сжигая квоту). Лёгкая проверка newest (1 read) + полная
+  // выборка только при новом сообщении. Статусы подтягиваются при выборках.
+  const maxTsRef = useRef<number>(0);
+
+  const applyDocs = useCallback(
+    async (docs: RestDoc[]) => {
+      const key = keyRef.current;
+      const out: ChatMessage[] = [];
+      let max = maxTsRef.current;
+      for (const d of docs) {
+        const v = d.data as unknown as MessageDoc;
+        const base: ChatMessage = {
+          id: d.id,
+          clientMessageId: v.clientMessageId ?? d.id,
+          senderId: v.senderId ?? '?',
+          createdAtMs: tsOf(v),
+          kind: v.kind ?? 'text',
+          mediaId: v.mediaId,
+          objectKey: v.objectKey,
+          driveFileId: v.driveFileId,
+          mimeType: v.mimeType,
+          size: v.size,
+          iv: v.iv,
+          status: statusOf(v),
+        };
+        if (typeof base.createdAtMs === 'number') max = Math.max(max, base.createdAtMs);
+        if (base.kind === 'text') {
+          try {
+            if (v.ciphertext && v.iv) base.text = await decryptText(key, v.iv, v.ciphertext);
+            else base.decryptError = true;
+          } catch {
+            base.decryptError = true;
+          }
+        }
+        out.push(base);
+      }
+      maxTsRef.current = max;
+      setMessages(out);
+      setSnapCount((c) => c + 1);
+      setConn({ online: navigator.onLine, fromCache: false });
+      // delivered/read для входящих — best effort
+      for (const d of docs) {
+        const v = d.data as unknown as MessageDoc;
+        if (v.senderId === user.uid) continue;
+        try {
+          if (!v.deliveredAt) await restPatch(`rooms/main/messages/${d.id}`, { deliveredAt: isoNow() });
+          else if (!v.readAt) await restPatch(`rooms/main/messages/${d.id}`, { readAt: isoNow() });
+        } catch {
+          // rules/offline — попробуем при следующей выборке
+        }
+      }
+    },
+    [user.uid],
+  );
+
+  const noteFetchError = useCallback((e: unknown) => {
+    setSnapErrCount((c) => c + 1);
+    const msg = e instanceof Error ? e.message : String(e);
+    setSnapErrLast(msg.slice(0, 300));
+    setConn((c) => ({ ...c, fromCache: true })); // данные могут быть несвежими
+  }, []);
+
+  const fullFetch = useCallback(
+    async (reason: string) => {
+      try {
+        const docs = await withTimeout(restFetchAll(100));
+        if (reason !== 'silent') setErr(null);
+        await applyDocs(docs);
+      } catch (e) {
+        noteFetchError(e);
+      }
+    },
+    [applyDocs, noteFetchError],
+  );
+
   useEffect(() => {
-    const fb = getFirebase();
-    if (!fb) return;
-    const q = query(
-      collection(fb.db, 'rooms', 'main', 'messages'),
-      orderBy('clientTs', 'asc'),
-      limitToLast(100),
-    );
-    const unsub = onSnapshot(
-      q,
-      { includeMetadataChanges: true },
-      (snap) => {
-        setConn((c) => ({ ...c, fromCache: snap.metadata.fromCache }));
-        setSnapCount((c) => c + 1);
-        const key = keyRef.current;
-        const docs = snap.docs;
-        void (async () => {
-          const out: ChatMessage[] = [];
-          for (const d of docs) {
-            const v = d.data() as MessageDoc;
-            const base: ChatMessage = {
-              id: d.id,
-              clientMessageId: v.clientMessageId ?? d.id,
-              senderId: v.senderId ?? '?',
-              createdAtMs: tsOf(v),
-              kind: v.kind ?? 'text',
-              mediaId: v.mediaId,
-              objectKey: v.objectKey,
-              driveFileId: v.driveFileId,
-              mimeType: v.mimeType,
-              size: v.size,
-              iv: v.iv,
-              status: statusOf(v),
-            };
-            if (base.kind === 'text') {
-              try {
-                if (v.ciphertext && v.iv) base.text = await decryptText(key, v.iv, v.ciphertext);
-                else base.decryptError = true;
-              } catch {
-                base.decryptError = true;
-              }
-            }
-            out.push(base);
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const light = async () => {
+      try {
+        const newest = await withTimeout(restNewestTs(), 20000);
+        if (!alive) return;
+        if (newest === null) {
+          if (maxTsRef.current !== 0) {
+            maxTsRef.current = 0;
+            setMessages([]);
           }
-          setMessages(out);
-          // delivered/read для входящих
-          for (const d of docs) {
-            const v = d.data() as MessageDoc;
-            if (v.senderId === user.uid) continue;
-            try {
-              if (!v.deliveredAt) await updateDoc(d.ref, { deliveredAt: serverTimestamp() });
-              else if (!v.readAt) await updateDoc(d.ref, { readAt: serverTimestamp() });
-            } catch {
-              // rules/offline — игнорируем, попробуем позже
-            }
-          }
-        })();
-      },
-      (e) => {
-        setSnapErrCount((c) => c + 1);
-        setSnapErrLast(`${e.code ?? '?'}: ${e.message}`.slice(0, 300));
-        setErr(`Realtime ошибка: ${e.message}`);
-      },
-    );
-    return unsub;
-  }, [user.uid]);
+        } else if (newest > maxTsRef.current) {
+          await fullFetch('silent');
+          if (!alive) return;
+        }
+        setConn({ online: navigator.onLine, fromCache: false });
+      } catch (e) {
+        if (alive) noteFetchError(e);
+      } finally {
+        if (alive) timer = setTimeout(light, document.hidden ? 30000 : 6000);
+      }
+    };
+    void fullFetch('silent').finally(() => {
+      if (alive) timer = setTimeout(light, 6000);
+    });
+    const onVis = () => {
+      if (!document.hidden) void fullFetch('silent');
+    };
+    const onNet = () => {
+      setConn({ online: navigator.onLine, fromCache: false });
+      void fullFetch('silent');
+    };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('online', onNet);
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('online', onNet);
+    };
+  }, [user.uid, fullFetch, noteFetchError]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -201,20 +246,19 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     setSending(true);
     try {
       const { ivB64, ctB64 } = await encryptText(keyRef.current, body);
-      const fb = getFirebase();
-      if (!fb) throw new Error('Firebase не настроен');
       // защита от дубля: не отправляем дважды один clientMessageId
-      const ref = await withTimeout(addDoc(collection(fb.db, 'rooms', 'main', 'messages'), {
+      const id = await withTimeout(restCreate('rooms/main/messages', {
         clientMessageId,
         senderId: user.uid,
-        createdAt: serverTimestamp(),
+        createdAt: isoNow(),
         clientTs: Date.now(),
         kind: 'text',
         ciphertext: ctB64,
         iv: ivB64,
       } satisfies MessageDoc));
       setPending((p) => p.filter((m) => m.clientMessageId !== clientMessageId));
-      void firePush(ref.id);
+      void firePush(id);
+      void fullFetch('silent'); // своё сообщение подтянуть сразу, не ждать опроса
     } catch (e2) {
       setPending((p) =>
         p.map((m) =>
@@ -265,21 +309,19 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
       if (!put.ok) throw new Error(`Drive upload failed: ${put.status}`);
       const meta = (await put.json()) as { id?: string };
       if (!meta.id) throw new Error('Drive не вернул id файла');
-      const fb = getFirebase();
-      if (!fb) throw new Error('Firebase не настроен');
-      await withTimeout(setDoc(doc(fb.db, 'media', mediaId), {
+      await withTimeout(restSet(`media/${mediaId}`, {
         messageId: clientMessageId,
         driveFileId: meta.id,
         size: cipher.byteLength,
         mimeType: mime,
         iv: ivB64,
         senderId: user.uid,
-        createdAt: serverTimestamp(),
+        createdAt: isoNow(),
       }));
-      const ref = await withTimeout(addDoc(collection(fb.db, 'rooms', 'main', 'messages'), {
+      const id = await withTimeout(restCreate('rooms/main/messages', {
         clientMessageId,
         senderId: user.uid,
-        createdAt: serverTimestamp(),
+        createdAt: isoNow(),
         clientTs: Date.now(),
         kind: 'photo',
         mediaId,
@@ -288,7 +330,8 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         size: cipher.byteLength,
         iv: ivB64,
       } satisfies MessageDoc));
-      void firePush(ref.id);
+      void firePush(id);
+      void fullFetch('silent');
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Не удалось отправить фото');
     } finally {
@@ -375,14 +418,12 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     setPingBusy(true);
     setPing(null);
     try {
-      const fb = getFirebase();
-      if (!fb) throw new Error('Firebase не настроен');
       const t0 = Date.now();
       await withTimeout(
-        setDoc(doc(fb.db, 'debug-ping', user.uid), { ts: serverTimestamp(), v: APP_VERSION }),
+        restSet(`debug-ping/${user.uid}`, { ts: isoNow(), v: APP_VERSION }),
         20000,
       );
-      setPing(`WRITE OK за ${Date.now() - t0}мс`);
+      setPing(`WRITE OK за ${Date.now() - t0}мс (транспорт: REST)`);
     } catch (e) {
       setPing(`WRITE FAIL: ${e instanceof Error ? e.message : e}`);
     } finally {
@@ -394,21 +435,18 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     setPingBusy(true);
     setPing(null);
     try {
-      const fb = getFirebase();
-      if (!fb) throw new Error('Firebase не настроен');
       const t0 = Date.now();
-      const s = await withTimeout(
-        getDocs(query(collection(fb.db, 'rooms', 'main', 'messages'), limit(1))),
-        20000,
-      );
-      setPing(
-        `READ OK за ${Date.now() - t0}мс, fromCache=${s.metadata.fromCache}, docs=${s.size}`,
-      );
+      const newest = await withTimeout(restNewestTs(), 20000);
+      setPing(`READ OK за ${Date.now() - t0}мс (транспорт: REST), newestTs=${newest}`);
     } catch (e) {
       setPing(`READ FAIL: ${e instanceof Error ? e.message : e}`);
     } finally {
       setPingBusy(false);
     }
+  };
+
+  const manualRefresh = () => {
+    void fullFetch('manual');
   };
 
   const visible = [...messages, ...pending].sort((a, b) => a.createdAtMs - b.createdAtMs);
@@ -425,6 +463,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         <div className="row">
           <button onClick={onShowKey}>QR ключа</button>
           <button onClick={togglePush}>{pushOn ? 'Push: вкл' : 'Push: выкл'}</button>
+          <button onClick={manualRefresh} title="Обновить сообщения">⟳</button>
           <button onClick={() => setDebugOpen((v) => !v)}>⚙</button>
           <button onClick={onLogout}>Выйти</button>
         </div>
