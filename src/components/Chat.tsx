@@ -5,13 +5,14 @@ import {
   collection,
   doc,
   getDocs,
+  limit,
   limitToLast,
-  onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import { getFirebase } from '../lib/firebase';
 import { APP_VERSION } from '../lib/version';
@@ -97,91 +98,164 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     hasPushSubscription().then(setPushOn).catch(() => {});
   }, []);
 
-  // Realtime через Firestore onSnapshot (как в рабочей Vercel-версии).
-  // Yandex-функция в доставке не участвует — только фото (Drive) и пуши.
-  useEffect(() => {
-    const fb = getFirebase();
-    if (!fb) return;
-    const q = query(
-      collection(fb.db, 'rooms', 'main', 'messages'),
-      orderBy('clientTs', 'asc'),
-      limitToLast(100),
-    );
-    const unsub = onSnapshot(
-      q,
-      { includeMetadataChanges: true },
-      (snap) => {
-        setConn((c) => ({ ...c, fromCache: snap.metadata.fromCache }));
-        setSnapCount((c) => c + 1);
-        const key = keyRef.current;
-        const docs = snap.docs;
-        void (async () => {
-          const out: ChatMessage[] = [];
-          for (const d of docs) {
-            const v = d.data() as MessageDoc;
-            const base: ChatMessage = {
-              id: d.id,
-              clientMessageId: v.clientMessageId ?? d.id,
-              senderId: v.senderId ?? '?',
-              createdAtMs: tsOf(v),
-              kind: v.kind ?? 'text',
-              mediaId: v.mediaId,
-              objectKey: v.objectKey,
-              driveFileId: v.driveFileId,
-              mimeType: v.mimeType,
-              size: v.size,
-              iv: v.iv,
-              status: statusOf(v),
-            };
-            if (base.kind === 'text') {
-              try {
-                if (v.ciphertext && v.iv) base.text = await decryptText(key, v.iv, v.ciphertext);
-                else base.decryptError = true;
-              } catch {
-                base.decryptError = true;
-              }
-            }
-            out.push(base);
-          }
-          setMessages(out);
-          // delivered/read для входящих
-          for (const d of docs) {
-            const v = d.data() as MessageDoc;
-            if (v.senderId === user.uid) continue;
-            try {
-              if (!v.deliveredAt) await updateDoc(d.ref, { deliveredAt: serverTimestamp() });
-              else if (!v.readAt) await updateDoc(d.ref, { readAt: serverTimestamp() });
-            } catch {
-              // rules/offline — игнорируем, попробуем позже
-            }
-          }
-        })();
-      },
-      (e) => {
-        setSnapErrCount((c) => c + 1);
-        setSnapErrLast(`${e.code ?? '?'}: ${e.message}`.slice(0, 300));
-        setErr(`Realtime ошибка: ${e.message}`);
-      },
-    );
-    return unsub;
-  }, [user.uid]);
+  // Доставка без persistent-стрима: одиночные getDocs по событиям.
+  // Стрим WebChannel рвётся по кругу в части сетей (200 с телом handshake,
+  // дальше обрыв) — одиночные запросы при этом проходят нормально.
+  // Мгновенность даёт push: SW будит клиент → refetch за ~1-2с.
+  // Страховка: лёгкая проверка newest (1 read) каждые 30с.
+  const maxTsRef = useRef<number>(0);
 
-  // Ручное обновление (кнопка ⟳): разовый запрос мимо стрима.
-  const manualRefresh = useCallback(async () => {
-    const fb = getFirebase();
-    if (!fb) return;
-    try {
-      await withTimeout(
-        getDocs(
-          query(collection(fb.db, 'rooms', 'main', 'messages'), orderBy('clientTs', 'asc'), limitToLast(100)),
-        ),
-      );
-      setErr(null);
-    } catch (e) {
-      setSnapErrCount((c) => c + 1);
-      setSnapErrLast(e instanceof Error ? e.message : String(e));
-    }
+  const applySnapDocs = useCallback(async (docs: QueryDocumentSnapshot[]) => {
+      const key = keyRef.current;
+      const out: ChatMessage[] = [];
+      let max = maxTsRef.current;
+      for (const d of docs) {
+        const v = d.data() as unknown as MessageDoc;
+        const base: ChatMessage = {
+          id: d.id,
+          clientMessageId: v.clientMessageId ?? d.id,
+          senderId: v.senderId ?? '?',
+          createdAtMs: tsOf(v),
+          kind: v.kind ?? 'text',
+          mediaId: v.mediaId,
+          objectKey: v.objectKey,
+          driveFileId: v.driveFileId,
+          mimeType: v.mimeType,
+          size: v.size,
+          iv: v.iv,
+          status: statusOf(v),
+        };
+        max = Math.max(max, base.createdAtMs);
+        if (base.kind === 'text') {
+          try {
+            if (v.ciphertext && v.iv) base.text = await decryptText(key, v.iv, v.ciphertext);
+            else base.decryptError = true;
+          } catch {
+            base.decryptError = true;
+          }
+        }
+        out.push(base);
+      }
+      maxTsRef.current = max;
+      setMessages(out);
+      setSnapCount((c) => c + 1);
+      setConn({ online: navigator.onLine, fromCache: false });
+      // delivered/read для входящих — best effort
+      for (const d of docs) {
+        const v = d.data() as unknown as MessageDoc;
+        if (v.senderId === user.uid) continue;
+        try {
+          if (!v.deliveredAt) await updateDoc(d.ref, { deliveredAt: serverTimestamp() });
+          else if (!v.readAt) await updateDoc(d.ref, { readAt: serverTimestamp() });
+        } catch {
+          // rules/offline — попробуем при следующем refetch
+        }
+      }
+    },
+    [user.uid],
+  );
+
+  const noteFetchError = useCallback((e: unknown, label: string) => {
+    setSnapErrCount((c) => c + 1);
+    setSnapErrLast(`${label}: ${e instanceof Error ? e.message : String(e)}`.slice(0, 300));
+    setConn((c) => ({ ...c, fromCache: true })); // данные могут быть несвежими
   }, []);
+
+  const fullFetch = useCallback(
+    async (reason: string) => {
+      const fb = getFirebase();
+      if (!fb) return;
+      try {
+        const snap = await withTimeout(
+          getDocs(
+            query(
+              collection(fb.db, 'rooms', 'main', 'messages'),
+              orderBy('clientTs', 'asc'),
+              limitToLast(100),
+            ),
+          ),
+        );
+        if (reason !== 'silent') setErr(null);
+        await applySnapDocs(snap.docs);
+      } catch (e) {
+        noteFetchError(e, `fetch/${reason}`);
+      }
+    },
+    [applySnapDocs, noteFetchError],
+  );
+
+  // Ручное обновление (кнопка ⟳).
+  const manualRefresh = useCallback(() => {
+    void fullFetch('manual');
+  }, [fullFetch]);
+
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Дешёвая страховка: newest (1 read) каждые 30с; полная выборка — только если есть новое.
+    const guard = async () => {
+      try {
+        const fb = getFirebase();
+        if (!fb) return;
+        const probe = await withTimeout(
+          getDocs(
+            query(
+              collection(fb.db, 'rooms', 'main', 'messages'),
+              orderBy('clientTs', 'desc'),
+              limit(1),
+            ),
+          ),
+          20000,
+        );
+        if (!alive) return;
+        const docs = probe.docs;
+        const newest = docs.length > 0 ? tsOf(docs[0]!.data() as MessageDoc) : null;
+        if (newest === null) {
+          if (maxTsRef.current !== 0) {
+            maxTsRef.current = 0;
+            setMessages([]);
+          }
+        } else if (newest > maxTsRef.current) {
+          await fullFetch('silent');
+          if (!alive) return;
+        }
+        setConn({ online: navigator.onLine, fromCache: false });
+      } catch (e) {
+        if (alive) noteFetchError(e, 'guard');
+      } finally {
+        if (alive) timer = setTimeout(guard, 30000);
+      }
+    };
+    // Push из SW → мгновенный refetch (основной путь доставки).
+    const onSwMessage = (ev: MessageEvent) => {
+      const data = ev.data as { type?: string } | null;
+      if (data && data.type === 'ns-refresh') void fullFetch('push');
+    };
+    const onVis = () => {
+      if (!document.hidden) void fullFetch('silent');
+    };
+    const onNet = () => {
+      setConn({ online: navigator.onLine, fromCache: false });
+      void fullFetch('silent');
+    };
+    void fullFetch('silent').finally(() => {
+      if (alive) timer = setTimeout(guard, 30000);
+    });
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', onSwMessage);
+    }
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('online', onNet);
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', onSwMessage);
+      }
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('online', onNet);
+    };
+  }, [user.uid, fullFetch, noteFetchError]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
