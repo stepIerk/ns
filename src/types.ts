@@ -11,7 +11,8 @@ export interface ChatMessage {
   decryptError?: boolean;
   // photo
   mediaId?: string;
-  objectKey?: string;
+  objectKey?: string; // legacy B2 (старые сообщения)
+  driveFileId?: string; // Google Drive (новый флоу)
   mimeType?: string;
   size?: number;
   iv?: string;
@@ -30,7 +31,8 @@ export interface MessageDoc {
   ciphertext?: string; // base64, text
   iv?: string; // base64, text + photo
   mediaId?: string;
-  objectKey?: string;
+  objectKey?: string; // legacy B2
+  driveFileId?: string; // Google Drive
   mimeType?: string;
   size?: number;
   deliveredAt?: unknown;
@@ -39,7 +41,8 @@ export interface MessageDoc {
 
 export interface MediaDoc {
   messageId: string;
-  objectKey: string;
+  objectKey?: string; // legacy B2
+  driveFileId?: string; // Google Drive
   size: number; // размер ciphertext
   mimeType: string;
   iv: string;

@@ -25,8 +25,9 @@ dist-ssr
 
 .env*
 
+# собранный zip функции (содержит node_modules) — только для ручного деплоя
+yc-api/*.zip
 
 
 
 
-.github/

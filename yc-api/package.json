@@ -1,0 +1,15 @@
+{
+  "name": "ns-api",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Yandex Cloud Function: Drive media + push for ns messenger (2 users)",
+  "main": "index.js",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "googleapis": "^140.0.0",
+    "web-push": "^3.6.7"
+  }
+}

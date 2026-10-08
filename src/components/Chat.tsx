@@ -13,7 +13,8 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { getFirebase } from '../lib/firebase';
-import { decryptBytes, decryptText, encryptBytes, encryptText } from '../lib/crypto';
+import { b64ToBytes, decryptBytes, decryptText, encryptBytes, encryptText } from '../lib/crypto';
+import { prepareImage } from '../lib/image';
 import { authedPost } from '../lib/api';
 import { disablePush, enablePush, hasPushSubscription, registerSW } from '../lib/push';
 import type { ChatMessage, MessageDoc } from '../types';
@@ -26,6 +27,7 @@ interface Props {
 }
 
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+const DOWNLOAD_CHUNK = 1024 * 1024; // 1МБ — чанки прокси-скачивания с Drive
 
 function tsOf(d: MessageDoc): number {
   if (typeof d.clientTs === 'number') return d.clientTs;
@@ -99,6 +101,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
               kind: v.kind ?? 'text',
               mediaId: v.mediaId,
               objectKey: v.objectKey,
+              driveFileId: v.driveFileId,
               mimeType: v.mimeType,
               size: v.size,
               iv: v.iv,
@@ -208,34 +211,37 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
       setErr('Пока поддерживаются только изображения');
       return;
     }
-    if (file.size > MAX_PHOTO_BYTES) {
-      setErr('Фото больше 10 МБ');
-      return;
-    }
     setPhotoBusy(true);
     const clientMessageId = crypto.randomUUID();
     const mediaId = crypto.randomUUID();
     try {
-      const plain = await file.arrayBuffer();
+      // Сжимаем до отправки, шифруем, льём шифротекст напрямую в Google
+      // (resumable-сессия) — сервер байтов не видит.
+      const { bytes: plain, mime } = await prepareImage(file);
+      if (plain.byteLength > MAX_PHOTO_BYTES) {
+        throw new Error('Фото больше 10 МБ даже после сжатия');
+      }
       const { ivB64, cipher } = await encryptBytes(keyRef.current, plain);
-      const up = await authedPost<{ putUrl: string; objectKey: string }>('/api/media/upload-url', {
+      const { sessionUrl } = await authedPost<{ sessionUrl: string }>('/api/media/upload-init', {
         mediaId,
-        mimeType: file.type,
+        mimeType: mime,
         size: cipher.byteLength,
       });
-      const put = await fetch(up.putUrl, {
+      const put = await fetch(sessionUrl, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: cipher,
       });
-      if (!put.ok) throw new Error(`B2 upload failed: ${put.status}`);
+      if (!put.ok) throw new Error(`Drive upload failed: ${put.status}`);
+      const meta = (await put.json()) as { id?: string };
+      if (!meta.id) throw new Error('Drive не вернул id файла');
       const fb = getFirebase();
       if (!fb) throw new Error('Firebase не настроен');
       await setDoc(doc(fb.db, 'media', mediaId), {
         messageId: clientMessageId,
-        objectKey: up.objectKey,
+        driveFileId: meta.id,
         size: cipher.byteLength,
-        mimeType: file.type,
+        mimeType: mime,
         iv: ivB64,
         senderId: user.uid,
         createdAt: serverTimestamp(),
@@ -247,8 +253,8 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         clientTs: Date.now(),
         kind: 'photo',
         mediaId,
-        objectKey: up.objectKey,
-        mimeType: file.type,
+        driveFileId: meta.id,
+        mimeType: mime,
         size: cipher.byteLength,
         iv: ivB64,
       } satisfies MessageDoc);
@@ -261,17 +267,50 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     }
   };
 
+  const openDrivePhoto = async (m: ChatMessage) => {
+    const total = m.size ?? 0;
+    if (!m.driveFileId || !m.iv || total <= 0 || total > MAX_PHOTO_BYTES) {
+      throw new Error('bad photo metadata');
+    }
+    const parts: Uint8Array[] = [];
+    let received = 0;
+    for (let start = 0; start < total; start += DOWNLOAD_CHUNK) {
+      const end = Math.min(start + DOWNLOAD_CHUNK - 1, total - 1);
+      const { data } = await authedPost<{ data: string; total: number }>('/api/media/download', {
+        driveFileId: m.driveFileId,
+        start,
+        end,
+      });
+      const chunk = b64ToBytes(data);
+      parts.push(chunk);
+      received += chunk.length;
+    }
+    const cipher = new Uint8Array(received);
+    let off = 0;
+    for (const p of parts) {
+      cipher.set(p, off);
+      off += p.length;
+    }
+    return cipher.buffer as ArrayBuffer;
+  };
+
+  const openLegacyB2Photo = async (m: ChatMessage) => {
+    if (!m.objectKey) throw new Error('bad photo metadata');
+    const { getUrl } = await authedPost<{ getUrl: string }>('/api/media/download-url', {
+      objectKey: m.objectKey,
+    });
+    const res = await fetch(getUrl);
+    if (!res.ok) throw new Error(`B2 download failed: ${res.status}`);
+    return res.arrayBuffer();
+  };
+
   const openPhoto = async (m: ChatMessage) => {
-    if (!m.objectKey || !m.iv) return;
+    if (!m.iv) return;
+    if (!m.driveFileId && !m.objectKey) return;
     setViewerLoading(m.id);
     setErr(null);
     try {
-      const { getUrl } = await authedPost<{ getUrl: string }>('/api/media/download-url', {
-        objectKey: m.objectKey,
-      });
-      const res = await fetch(getUrl);
-      if (!res.ok) throw new Error(`B2 download failed: ${res.status}`);
-      const cipher = await res.arrayBuffer();
+      const cipher = m.driveFileId ? await openDrivePhoto(m) : await openLegacyB2Photo(m);
       const plain = await decryptBytes(keyRef.current, m.iv, cipher);
       const blob = new Blob([plain], { type: m.mimeType ?? 'image/jpeg' });
       const url = URL.createObjectURL(blob);
