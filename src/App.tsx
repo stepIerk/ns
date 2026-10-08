@@ -3,7 +3,8 @@ import { QRCodeSVG } from 'qrcode.react';
 import { AuthProvider, useAuth } from './lib/auth';
 import { isFirebaseConfigured } from './lib/firebase';
 import { exportRoomKeyToString } from './lib/crypto';
-import { loadRoomKey } from './lib/keystore';
+import { clearRoomKey, loadRoomKey } from './lib/keystore';
+import { disablePush } from './lib/push';
 import Login from './components/Login';
 import PairingGate from './components/PairingGate';
 import Chat from './components/Chat';
@@ -29,7 +30,22 @@ function Shell() {
   const handleLogout = () => {
     setRoomKey(null);
     setShowKey(false);
+    // best-effort: убрать push-подписку этого браузера, чтобы тестовый комп не получал пуши
+    if (userUid) void disablePush(userUid).catch(() => {});
     void logout();
+  };
+
+  // Полный сброс тестового устройства: ключ + сессия. Firestore-историю не трогает.
+  const handleWipeDevice = async () => {
+    if (!window.confirm('Удалить room key с ЭТОГО устройства и выйти? История в Firestore останется.')) return;
+    try {
+      if (userUid) await disablePush(userUid).catch(() => {});
+      await clearRoomKey();
+    } finally {
+      setRoomKey(null);
+      setShowKey(false);
+      await logout().catch(() => {});
+    }
   };
 
   useEffect(() => {
@@ -66,7 +82,10 @@ function Shell() {
             <h3>Room key для второго устройства</h3>
             {keyString && <QRCodeSVG value={keyString} size={220} />}
             <textarea readOnly value={keyString} rows={3} style={{ width: '100%' }} />
-            <button onClick={() => setShowKey(false)}>Закрыть</button>
+            <div className="row">
+              <button onClick={() => setShowKey(false)}>Закрыть</button>
+              <button onClick={() => void handleWipeDevice()}>Удалить ключ с этого устройства</button>
+            </div>
           </div>
         </div>
       )}

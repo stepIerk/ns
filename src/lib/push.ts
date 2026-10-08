@@ -13,7 +13,8 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
 export async function registerSW(): Promise<ServiceWorkerRegistration | null> {
   if (!('serviceWorker' in navigator)) return null;
   try {
-    const reg = await navigator.serviceWorker.register('/sw.js');
+    // Относительно BASE_URL: работает и в корне (Vercel), и в подпути (GH Pages /ns/).
+    const reg = await navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`);
     return reg;
   } catch (e) {
     console.warn('[push] sw register failed', e);

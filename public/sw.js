@@ -26,7 +26,7 @@ self.addEventListener('notificationclick', (event) => {
           return;
         }
       }
-      await clients.openWindow('/');
+      await clients.openWindow(self.registration.scope);
     })(),
   );
 });

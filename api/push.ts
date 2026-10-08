@@ -2,15 +2,17 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import webpush from 'web-push';
 import { admin, allowedUids } from './_lib/firebaseAdmin.js';
 import { requireUid, httpError } from './_lib/auth.js';
+import { applyCors } from './_lib/cors.js';
 
 let vapidSet = false;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed' });
-    return;
-  }
   try {
+    if (applyCors(req, res)) return;
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: 'Method not allowed' });
+      return;
+    }
     const uid = await requireUid(req);
     const { messageId } = (req.body ?? {}) as { messageId?: string };
     if (!messageId || typeof messageId !== 'string') {

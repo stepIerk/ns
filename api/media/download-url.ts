@@ -2,14 +2,16 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { requireUid, httpError } from '../_lib/auth.js';
+import { applyCors } from '../_lib/cors.js';
 import { b2 } from '../_lib/b2.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed' });
-    return;
-  }
   try {
+    if (applyCors(req, res)) return;
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: 'Method not allowed' });
+      return;
+    }
     await requireUid(req);
     const { objectKey } = (req.body ?? {}) as { objectKey?: string };
     if (!objectKey || typeof objectKey !== 'string' || !objectKey.startsWith('media/')) {

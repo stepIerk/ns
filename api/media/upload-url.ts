@@ -2,16 +2,18 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { requireUid, httpError } from '../_lib/auth.js';
+import { applyCors } from '../_lib/cors.js';
 import { b2 } from '../_lib/b2.js';
 
 const MAX_CIPHER_BYTES = 12 * 1024 * 1024; // 10МБ + overhead AES-GCM
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed' });
-    return;
-  }
   try {
+    if (applyCors(req, res)) return;
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: 'Method not allowed' });
+      return;
+    }
     const uid = await requireUid(req);
     const { mediaId, mimeType, size } = (req.body ?? {}) as {
       mediaId?: string;
