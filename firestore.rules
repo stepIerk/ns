@@ -14,15 +14,15 @@ service cloud.firestore {
 
     match /rooms/main/messages/{messageId} {
       allow read: if isMember();
+      // v1: только текст. photo за флагом ENABLE_MEDIA (чтение старых photo ок).
       allow create: if isMember()
         && request.resource.data.senderId == request.auth.uid
         && request.resource.data.clientMessageId is string
         && request.resource.data.clientTs is number
-        && request.resource.data.kind in ['text', 'photo'];
-      // delivered/read может проставить получатель
-      allow update: if isMember()
-        && request.resource.data.senderId == resource.data.senderId
-        && request.resource.data.clientMessageId == resource.data.clientMessageId;
+        && request.resource.data.kind == 'text';
+      // v1: receipts (deliveredAt/readAt) выкл за флагом ENABLE_RECEIPTS.
+      // Никаких update из onSnapshot — иначе loop и flood Write/channel.
+      allow update: if false;
       allow delete: if false;
     }
 

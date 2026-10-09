@@ -9,15 +9,15 @@ export interface ChatMessage {
   // расшифрованный текст (только локально, никогда не пишем в Firestore)
   text?: string;
   decryptError?: boolean;
-  // photo
+  // photo — за флагом ENABLE_MEDIA (v1 только читаем как заглушку)
   mediaId?: string;
   objectKey?: string; // legacy B2 (старые сообщения)
   driveFileId?: string; // Google Drive (новый флоу)
   mimeType?: string;
   size?: number;
   iv?: string;
-  // статусы
-  status: 'sending' | 'sent' | 'delivered' | 'read' | 'error';
+  // статусы v1: только локальные. delivered/read за флагом ENABLE_RECEIPTS.
+  status: 'sending' | 'sent' | 'error';
   pending?: boolean;
   errorText?: string;
 }
@@ -35,6 +35,7 @@ export interface MessageDoc {
   driveFileId?: string; // Google Drive
   mimeType?: string;
   size?: number;
+  // receipts за флагом ENABLE_RECEIPTS (v1 не пишем/не читаем)
   deliveredAt?: unknown;
   readAt?: unknown;
 }

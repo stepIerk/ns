@@ -1,4 +1,8 @@
-/* Minimal push SW. Payload содержит только messageId — без plaintext. */
+/* Push SW для PWA (iOS 16.4+ через APNs, остальные через FCM/WebPush).
+ * Payload содержит только messageId — без plaintext.
+ * Важно для Safari: показываем notification СРАЗУ в push-событии,
+ * иначе Safari отзывает permission (invisible push запрещены).
+ */
 self.addEventListener('push', (event) => {
   let data = {};
   try {
@@ -9,8 +13,11 @@ self.addEventListener('push', (event) => {
   const title = 'Новое сообщение';
   const options = {
     body: 'У вас новое зашифрованное сообщение',
+    icon: 'icon-192.png',
+    badge: 'icon-192.png',
     data: data,
     tag: (data && data.messageId) || 'ns-msg',
+    renotify: true,
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });

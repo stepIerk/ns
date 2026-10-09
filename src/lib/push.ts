@@ -22,22 +22,35 @@ export async function registerSW(): Promise<ServiceWorkerRegistration | null> {
   }
 }
 
-/** Запросить permission, подписать и сохранить subscription в Firestore. */
+/** Запросить permission, подписать и сохранить subscription в Firestore.
+ * Вызывать НАПРЯМУЮ из onClick (user gesture) — требование iOS PWA:
+ * permission + subscribe должны идти подряд без промежуточных fetch.
+ * SW должен быть уже зарегистрирован (делаем на mount через registerSW()).
+ */
 export async function enablePush(uid: string): Promise<void> {
   const vapid = (import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined)?.trim();
   if (!vapid) throw new Error('Нет VITE_VAPID_PUBLIC_KEY');
   if (!('Notification' in window) || !('PushManager' in window)) {
     throw new Error('Push не поддерживается этим браузером');
   }
+  if (!('serviceWorker' in navigator)) throw new Error('Нет Service Worker');
+
+  // 1. Permission — строго в жесте.
   const perm = await Notification.requestPermission();
   if (perm !== 'granted') throw new Error('Разрешение на уведомления не выдано');
 
+  // 2. Сразу subscribe, без network-пауз между жестом и subscribe.
+  // SW уже зарегистрирован на mount, ready резолвится быстро.
   const reg = (await navigator.serviceWorker.ready.catch(() => null)) ?? (await registerSW());
   if (!reg) throw new Error('Service Worker не зарегистрирован');
-  const sub = await reg.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(vapid) as unknown as ArrayBuffer,
-  });
+  const existing = await reg.pushManager.getSubscription().catch(() => null);
+  const sub =
+    existing ??
+    (await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapid) as unknown as ArrayBuffer,
+    }));
+  // 3. Только после subscribe — запись в Firestore.
   const fb = getFirebase();
   if (!fb) throw new Error('Firebase не настроен');
   await setDoc(
