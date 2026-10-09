@@ -68,7 +68,21 @@ async function uploadInit(event, corsHeaders) {
     return json(400, { error: 'bad size (max 10MB plaintext + overhead)' }, corsHeaders);
   }
   // Только ciphertext. Сервер байты не видит: клиент льёт их напрямую в sessionUrl.
-  const { sessionUrl } = await initResumableUpload({ name: `${uid}_${mediaId}`, mimeType });
+  // Пробрасываем Origin браузера в инициацию сессии — иначе Google не отдаст
+  // CORS-заголовки на PUT из браузера (см. initResumableUpload).
+  const headers = event.headers || {};
+  let callerOrigin = '';
+  for (const k of Object.keys(headers)) {
+    if (k.toLowerCase() === 'origin') {
+      const v = headers[k];
+      callerOrigin = Array.isArray(v) ? v.join(', ') : String(v || '');
+    }
+  }
+  const { sessionUrl } = await initResumableUpload({
+    name: `${uid}_${mediaId}`,
+    mimeType,
+    origin: callerOrigin,
+  });
   return json(200, { sessionUrl }, corsHeaders);
 }
 

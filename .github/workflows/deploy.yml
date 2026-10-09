@@ -1,7 +1,6 @@
-# Статика фронта на GitHub Pages.
-# ВНИМАНИЕ: это деплоит только фронт. API (/api/*) остаётся там,
-# где вы его хостите, и задаётся секретом VITE_API_BASE_URL.
-# Если VITE_API_BASE_URL пуст — фронт ходит в same-origin /api (вариант Vercel).
+# Статика фронта на GitHub Pages. API — только Yandex Cloud Function (yc-api/),
+# задаётся секретом VITE_API_BASE_URL (invoke-URL без слэша в конце).
+# Vercel-варианта больше нет: VITE_API_BASE_URL обязателен.
 #
 # Подготовка (один раз):
 # 1. GitHub → Settings → Pages → Build and deployment → Source: GitHub Actions.
@@ -9,11 +8,9 @@
 #    (значения те же, что в Vercel env) + VITE_API_BASE_URL (см. ниже).
 # 3. Push в main → вкладка Actions → деплой → сайт на https://<user>.github.io/<repo>/.
 #
-# VITE_API_BASE_URL:
-# - фронт и API вместе на Vercel: оставить ПУСТЫМ.
-# - фронт на GH Pages: полный origin API без слэша в конце,
-#   например https://api-ваш-домен.ru (этот origin также добавить
-#   в серверную env FRONTEND_ORIGINS, см. .env.example).
+# VITE_API_BASE_URL (обязателен): invoke-URL Yandex-функции без слэша в конце,
+# например https://functions.yandexcloud.net/<id>.
+# Этот же origin должен быть в env функции FRONTEND_ORIGINS.
 
 name: Deploy to GitHub Pages
 

@@ -60,16 +60,25 @@ async function ensureFolderId() {
   return folderIdCache;
 }
 
-/** Открыть resumable-сессию загрузки. Возвращает sessionUrl для прямого PUT клиента. */
-async function initResumableUpload({ name, mimeType }) {
+/** Открыть resumable-сессию загрузки. Возвращает sessionUrl для прямого PUT клиента.
+ * ВАЖНО для браузера: upload-фронтенд Google привязывает CORS будущей сессии
+ * к заголовку Origin запроса инициации. Без него ответы на PUT из браузера
+ * приходят без ACAO (и с 403) — см. доки GCS resumable uploads.
+ * Поэтому пробрасываем Origin фронтенда (тот же, что браузер пришлёт на PUT).
+ */
+async function initResumableUpload({ name, mimeType, origin }) {
   const token = await accessToken();
   const folderId = await ensureFolderId();
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json; charset=UTF-8',
+  };
+  if (origin && typeof origin === 'string' && /^https:\/\/[^/]+$/.test(origin.trim())) {
+    headers.Origin = origin.trim();
+  }
   const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json; charset=UTF-8',
-    },
+    headers,
     body: JSON.stringify({ name, parents: [folderId], appProperties: { app: 'ns' } }),
   });
   if (!res.ok) throw Object.assign(new Error(`Drive upload init failed: ${res.status}`), { status: 502 });
