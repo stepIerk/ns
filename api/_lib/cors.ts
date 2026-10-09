@@ -35,7 +35,7 @@ export function applyCors(req: VercelRequest, res: VercelResponse): boolean {
   if (req.method === 'OPTIONS') {
     if (allowed) {
       res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Firebase-Token');
       res.setHeader('Access-Control-Max-Age', '86400');
       res.status(204).end();
     } else {

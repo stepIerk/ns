@@ -29,7 +29,9 @@ export async function authedPost<T>(path: string, body: Record<string, unknown>)
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      // НЕ Authorization: invoke-endpoint Яндекса перехватывает Bearer-токен
+      // как свой IAM-токен и отвечает 403 до того, как запрос дойдёт до функции.
+      'X-Firebase-Token': token,
     },
     body: JSON.stringify({ action: actionFor(path), ...body }),
   });

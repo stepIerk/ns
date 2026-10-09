@@ -33,7 +33,7 @@ function handleCors(method, headers) {
   if (method === 'OPTIONS') {
     if (allowed) {
       out['Access-Control-Allow-Methods'] = 'POST, GET, OPTIONS';
-      out['Access-Control-Allow-Headers'] = 'Content-Type, Authorization';
+      out['Access-Control-Allow-Headers'] = 'Content-Type, X-Firebase-Token';
       out['Access-Control-Max-Age'] = '86400';
       return { handled: { statusCode: 204, headers: out, body: '' } };
     }
