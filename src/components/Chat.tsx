@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import { useChat } from '../hooks/useChat';
+import { useMedia } from '../hooks/useMedia';
 import { APP_VERSION } from '../lib/version';
+import { ENABLE_MEDIA } from '../lib/flags';
 import { disablePush, enablePush, hasPushSubscription, registerSW } from '../lib/push';
 
 interface Props {
@@ -27,9 +29,14 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     setError,
     snapCount,
     snapError,
+    pushStatus,
+    apiBase,
     sendText,
     retryToDraft,
+    notifyMessage,
   } = useChat(user.uid, roomKey);
+
+  const media = useMedia(user.uid, roomKey, notifyMessage);
 
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -39,6 +46,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     () => typeof window !== 'undefined' && window.location.search.includes('debug=1'),
   );
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   // SW регистрируем заранее (не в жесте), чтобы в жесте остались только
   // permission + subscribe — это требование iOS PWA.
@@ -85,6 +93,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
 
   const offline = !online || fromCache;
   const standalone = isStandalone();
+  const shownError = error ?? (ENABLE_MEDIA ? media.mediaError : null);
 
   return (
     <div className="chat">
@@ -111,14 +120,20 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
           включите Push кнопкой выше.
         </div>
       )}
-      {error && <div className="error">{error}</div>}
+      {shownError && <div className="error">{shownError}</div>}
       {debugOpen && (
         <div className="card" style={{ margin: 8 }}>
           <div className="small">
             online={String(online)} fromCache={String(fromCache)} snapshots={snapCount} msgs=
             {visible.length}
           </div>
+          <div className="small">api={apiBase}</div>
+          {pushStatus && <div className="small">{pushStatus}</div>}
           {snapError && <div className="small">snap err: {snapError}</div>}
+          <div className="small muted">
+            iOS: сообщения в фоне приходят только пушем. Если snap растёт, а пуша нет — смотри
+            строку push выше (там же видно skipped/FAIL).
+          </div>
         </div>
       )}
 
@@ -127,23 +142,39 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
           const mine = m.senderId === user.uid;
           return (
             <div key={m.id} className={mine ? 'msg mine' : 'msg theirs'}>
-              <div className="bubble">
-                {m.decryptError ? <i>Не удалось расшифровать</i> : m.text}
-                <div className="meta">
-                  {new Date(m.createdAtMs).toLocaleTimeString()} ·{' '}
-                  {m.pending ? (m.status === 'error' ? 'ошибка' : 'отправка…') : 'отправлено'}
-                  {m.pending && m.status === 'error' && (
-                    <button
-                      onClick={() => {
-                        const draft = retryToDraft(m.clientMessageId);
-                        if (draft) setText(draft);
-                      }}
-                    >
-                      ↻ в поле ввода
-                    </button>
-                  )}
+              {m.kind === 'text' ? (
+                <div className="bubble">
+                  {m.decryptError ? <i>Не удалось расшифровать</i> : m.text}
+                  <div className="meta">
+                    {new Date(m.createdAtMs).toLocaleTimeString()} ·{' '}
+                    {m.pending ? (m.status === 'error' ? 'ошибка' : 'отправка…') : 'отправлено'}
+                    {m.pending && m.status === 'error' && (
+                      <button
+                        onClick={() => {
+                          const draft = retryToDraft(m.clientMessageId);
+                          if (draft) setText(draft);
+                        }}
+                      >
+                        ↻ в поле ввода
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="bubble">
+                  <button
+                    disabled={!ENABLE_MEDIA || media.viewerLoading === m.id}
+                    onClick={() => ENABLE_MEDIA && void media.openPhoto(m)}
+                  >
+                    {media.viewerLoading === m.id
+                      ? 'Загрузка…'
+                      : `📷 Фото (${Math.round((m.size ?? 0) / 1024)} КБ, шифр) — открыть`}
+                  </button>
+                  <div className="meta">
+                    {new Date(m.createdAtMs).toLocaleTimeString()} · отправлено
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
@@ -160,7 +191,36 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         <button type="submit" disabled={sending || !text.trim()}>
           {sending ? '…' : '➤'}
         </button>
+        {ENABLE_MEDIA && (
+          <>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                if (f) void media.sendPhoto(f);
+              }}
+            />
+            <button type="button" disabled={media.photoBusy} onClick={() => fileRef.current?.click()}>
+              {media.photoBusy ? '…' : '📷'}
+            </button>
+          </>
+        )}
       </form>
+
+      {ENABLE_MEDIA && media.viewer && (
+        <div className="modal" onClick={() => media.closeViewer()}>
+          <img
+            src={media.viewer.url}
+            alt="расшифрованное фото"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button onClick={() => media.closeViewer()}>Закрыть</button>
+        </div>
+      )}
     </div>
   );
 }

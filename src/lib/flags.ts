@@ -1,5 +1,5 @@
-// Фиче-флаги v1: чистый текстовый мессенджер.
-// Медиа (Drive/B2) и read-receipts (deliveredAt/readAt) временно выключены,
-// код под них не удалён — включается здесь одной строкой.
-export const ENABLE_MEDIA = false;
+// Фиче-флаги: медиа (фото через Drive) включено, read-receipts выключены.
+// Receipts (deliveredAt/readAt) не включаем: записи внутри onSnapshot дают
+// loop "snapshot -> write -> snapshot" и flood Write/channel.
+export const ENABLE_MEDIA = true;
 export const ENABLE_RECEIPTS = false;

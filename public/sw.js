@@ -1,4 +1,13 @@
-/* Push SW для PWA (iOS 16.4+ через APNs, остальные через FCM/WebPush).
+/* ns-messenger SW v2. Меняй версию при правках, иначе iOS залипнет на старом SW. */
+const SW_VERSION = 'v2';
+self.addEventListener('install', () => {
+  self.skipWaiting();
+});
+self.addEventListener('activate', (event) => {
+  event.waitUntil(clients.claim());
+});
+
+/* Push для PWA (iOS 16.4+ через APNs, остальные через FCM/WebPush).
  * Payload содержит только messageId — без plaintext.
  * Важно для Safari: показываем notification СРАЗУ в push-событии,
  * иначе Safari отзывает permission (invisible push запрещены).

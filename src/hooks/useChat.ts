@@ -47,9 +47,15 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
   const [error, setError] = useState<string | null>(null);
   const [snapCount, setSnapCount] = useState(0);
   const [snapError, setSnapError] = useState<string | null>(null);
+  // Последний результат триггера пуша — видно в ?debug=1.
+  // На iOS это главный канал доставки (листенер в фоне спит),
+  // а раньше ошибка тут глоталась в console.warn и была не видна.
+  const [pushStatus, setPushStatus] = useState<string | null>(null);
 
   const keyRef = useRef(roomKey);
-  keyRef.current = roomKey;
+  useEffect(() => {
+    keyRef.current = roomKey;
+  }, [roomKey]);
   const seenPushRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -84,7 +90,7 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
           const out: ChatMessage[] = [];
           for (const d of docs) {
             const v = d.data() as MessageDoc;
-            // Медиа за флагом: старые photo-доки показываем заглушкой, не падаем.
+            // Медиа: photo-доки несут метадату для useMedia (открытие по тапу).
             if ((v.kind ?? 'text') !== 'text') {
               out.push({
                 id: d.id,
@@ -92,7 +98,12 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
                 senderId: v.senderId ?? '?',
                 createdAtMs: tsOf(v),
                 kind: 'photo',
-                text: '[вложение скрыто в v1]',
+                mediaId: v.mediaId,
+                driveFileId: v.driveFileId,
+                mimeType: v.mimeType,
+                size: v.size,
+                iv: v.iv,
+                text: '[фото — нажмите открыть]',
                 status: 'sent',
               });
               continue;
@@ -134,8 +145,16 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
     if (seenPushRef.current.has(messageId)) return;
     seenPushRef.current.add(messageId);
     try {
-      await authedPost('/api/push', { messageId });
+      const res = await authedPost<{ ok?: boolean; skipped?: string; cleaned?: boolean }>(
+        '/api/push',
+        { messageId },
+      );
+      if (res?.skipped) setPushStatus(`push skipped: ${res.skipped}`);
+      else if (res?.cleaned) setPushStatus('push: подписка протухла, удалена');
+      else setPushStatus(`push ok (${messageId.slice(0, 6)}…)`);
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPushStatus(`push FAIL: ${msg.slice(0, 160)}`);
       console.warn('[push] trigger failed', e);
     }
   }, []);
@@ -211,7 +230,12 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
     setError,
     snapCount,
     snapError,
+    pushStatus,
+    apiBase:
+      (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim().replace(/\/+$/, '') ||
+      '(same-origin /api)',
     sendText,
     retryToDraft,
+    notifyMessage: firePush,
   };
 }

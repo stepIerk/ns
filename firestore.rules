@@ -14,12 +14,12 @@ service cloud.firestore {
 
     match /rooms/main/messages/{messageId} {
       allow read: if isMember();
-      // v1: только текст. photo за флагом ENABLE_MEDIA (чтение старых photo ок).
+      // Текст + фото (шифротекст фото лежит в Drive, в доке только метадата).
       allow create: if isMember()
         && request.resource.data.senderId == request.auth.uid
         && request.resource.data.clientMessageId is string
         && request.resource.data.clientTs is number
-        && request.resource.data.kind == 'text';
+        && request.resource.data.kind in ['text', 'photo'];
       // v1: receipts (deliveredAt/readAt) выкл за флагом ENABLE_RECEIPTS.
       // Никаких update из onSnapshot — иначе loop и flood Write/channel.
       allow update: if false;
