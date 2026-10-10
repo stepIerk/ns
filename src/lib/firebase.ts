@@ -51,8 +51,14 @@ export function getFirebase(): { app: FirebaseApp; auth: Auth; db: Firestore } |
     });
   }
   try {
-    // Обычный стриминг WebChannel — как в рабочей Vercel-версии, без флагов.
-    db = initializeFirestore(app, { localCache: persistentLocalCache() });
+    // Обычный стриминг WebChannel, но с авто-детектом long-polling:
+    // если сеть/блокировщик режет потоковые ответы Firestore (симптом:
+    // снапшоты только из кэша, fromCache=true, счётчик snapshots стоит),
+    // SDK сам переключится на long-polling и данные пойдут.
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache(),
+      experimentalAutoDetectLongPolling: true,
+    });
   } catch {
     db = getFirestore(app);
   }
