@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Lock, LogIn } from 'lucide-react';
 import { useAuth } from '../lib/auth';
 
 export default function Login() {
@@ -28,10 +29,15 @@ export default function Login() {
   return (
     <div className="screen">
       <div className="card">
-        <h2>Вход</h2>
-        <p className="muted">Только для двух пользователей. Регистрации нет.</p>
+        <div className="auth-head">
+          <div className="auth-logo">
+            <Lock size={20} />
+          </div>
+          <h2>Вход</h2>
+        </div>
+        <p className="muted small">Личный мессенджер со сквозным шифрованием. Только для двух пользователей, регистрации нет.</p>
         <form onSubmit={submit}>
-          <label>
+          <label className="field">
             Email
             <input
               type="email"
@@ -40,7 +46,7 @@ export default function Login() {
               onChange={(e) => setEmail(e.target.value)}
             />
           </label>
-          <label>
+          <label className="field">
             Пароль
             <input
               type="password"
@@ -50,11 +56,13 @@ export default function Login() {
             />
           </label>
           {err && <div className="error">{err}</div>}
-          <button type="submit" disabled={busy}>
-            {busy ? 'Вход…' : 'Войти'}
-          </button>
+          <div className="row">
+            <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+              <LogIn size={17} /> {busy ? 'Вход…' : 'Войти'}
+            </button>
+          </div>
         </form>
-        <p className="muted small">Сессия сохраняется на устройстве (browserLocalPersistence).</p>
+        <p className="muted small">Сессия сохраняется на устройстве.</p>
       </div>
     </div>
   );

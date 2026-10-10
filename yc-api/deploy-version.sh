@@ -20,7 +20,9 @@ yc serverless function version create \
   --source-path ns-api.zip \
   --environment "FIREBASE_SERVICE_ACCOUNT_JSON=$FIREBASE_SERVICE_ACCOUNT_JSON" \
   --environment "ALLOWED_UIDS=$ALLOWED_UIDS" \
-  --environment "GOOGLE_SERVICE_ACCOUNT_JSON=$GOOGLE_SERVICE_ACCOUNT_JSON" \
+  --environment "GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_OAUTH_CLIENT_ID" \
+  --environment "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_OAUTH_CLIENT_SECRET" \
+  --environment "GOOGLE_OAUTH_REFRESH_TOKEN=$GOOGLE_OAUTH_REFRESH_TOKEN" \
   --environment "DRIVE_FOLDER_ID=$DRIVE_FOLDER_ID" \
   --environment "VAPID_PUBLIC_KEY=$VAPID_PUBLIC_KEY" \
   --environment "VAPID_PRIVATE_KEY=$VAPID_PRIVATE_KEY" \

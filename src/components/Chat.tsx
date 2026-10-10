@@ -1,10 +1,29 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
+import {
+  Bell,
+  BellOff,
+  CheckCheck,
+  Clock,
+  ImagePlus,
+  Loader2,
+  Lock,
+  LogOut,
+  Moon,
+  QrCode,
+  RefreshCw,
+  Send,
+  Settings,
+  Sun,
+  WifiOff,
+  X,
+} from 'lucide-react';
 import { useChat } from '../hooks/useChat';
 import { useMedia } from '../hooks/useMedia';
-import { APP_VERSION } from '../lib/version';
+import { useTheme } from '../lib/theme';
 import { ENABLE_MEDIA } from '../lib/flags';
 import { disablePush, enablePush, hasPushSubscription, registerSW } from '../lib/push';
+import type { ChatMessage } from '../types';
 
 interface Props {
   user: User;
@@ -18,6 +37,22 @@ function isStandalone(): boolean {
   const mql = window.matchMedia?.('(display-mode: standalone)');
   if (mql?.matches) return true;
   return (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+}
+
+function dayLabel(ts: number): string {
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (sameDay(d, today)) return 'Сегодня';
+  if (sameDay(d, yesterday)) return 'Вчера';
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+}
+
+function timeLabel(ts: number): string {
+  return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
 export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
@@ -37,6 +72,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
   } = useChat(user.uid, roomKey);
 
   const media = useMedia(user.uid, roomKey, notifyMessage);
+  const { theme, toggle } = useTheme();
 
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -54,6 +90,12 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     registerSW().catch(() => {});
     hasPushSubscription().then(setPushOn).catch(() => {});
   }, []);
+
+  // Фото подгружаются сами при появлении в ленте (кэш + пул в useMedia).
+  useEffect(() => {
+    media.ensurePhotos(visible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -94,35 +136,86 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
   const offline = !online || fromCache;
   const standalone = isStandalone();
   const shownError = error ?? (ENABLE_MEDIA ? media.mediaError : null);
+  const initial = (user.email?.[0] ?? '?').toUpperCase();
+
+  // Разметка ленты (разделители дней, группировка подряд своих) — чисто,
+  // без мутаций в рендере: всё выводится из индекса.
+  const items = useMemo(
+    () =>
+      visible.map((m: ChatMessage, i: number) => {
+        const day = dayLabel(m.createdAtMs);
+        const prev = i > 0 ? visible[i - 1] : undefined;
+        const prevDay = prev ? dayLabel(prev.createdAtMs) : '';
+        return {
+          m,
+          day,
+          showDay: prevDay !== day,
+          grouped: !!prev && prev.senderId === m.senderId && prevDay === day,
+        };
+      }),
+    [visible],
+  );
 
   return (
     <div className="chat">
       <header className="topbar">
-        <div>
-          <strong>main</strong>
-          <span className="muted"> · {user.email}</span>
-          <span className="muted small"> · v{APP_VERSION}</span>
+        <div className="avatar">{initial}</div>
+        <div className="top-title">
+          <strong>Личный чат</strong>
+          <span className="top-sub">
+            <span className={`dot${offline ? ' off' : ''}`} />
+            <Lock size={11} />
+            {offline ? 'переподключение…' : 'сквозное шифрование'}
+          </span>
         </div>
-        <div className="row">
-          <button onClick={onShowKey}>QR ключа</button>
-          <button onClick={() => void onTogglePush()} disabled={pushBusy}>
-            {pushOn ? 'Push: вкл' : 'Push: выкл'}
+        <div className="top-actions">
+          <button
+            className="icon-btn"
+            onClick={toggle}
+            title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
+            aria-label="Переключить тему"
+          >
+            {theme === 'dark' ? <Sun size={19} /> : <Moon size={19} />}
           </button>
-          <button onClick={() => setDebugOpen((v) => !v)}>⚙</button>
-          <button onClick={onLogout}>Выйти</button>
+          <button
+            className={`icon-btn${pushOn ? ' active' : ''}`}
+            onClick={() => void onTogglePush()}
+            disabled={pushBusy}
+            title="Push-уведомления"
+            aria-label="Push-уведомления"
+          >
+            {pushOn ? <Bell size={19} /> : <BellOff size={19} />}
+          </button>
+          <button className="icon-btn" onClick={onShowKey} title="QR ключа" aria-label="QR ключа">
+            <QrCode size={19} />
+          </button>
+          <button
+            className={`icon-btn${debugOpen ? ' active' : ''}`}
+            onClick={() => setDebugOpen((v) => !v)}
+            title="Настройки"
+            aria-label="Настройки"
+          >
+            <Settings size={19} />
+          </button>
+          <button className="icon-btn" onClick={onLogout} title="Выйти" aria-label="Выйти">
+            <LogOut size={19} />
+          </button>
         </div>
       </header>
 
-      {offline && <div className="banner">Офлайн / переподключение…</div>}
-      {!standalone && !pushOn && (
-        <div className="banner">
-          iOS: для уведомлений откройте сайт с иконки «На экране Домой» (Add to Home Screen), затем
-          включите Push кнопкой выше.
+      {offline && (
+        <div className="notice">
+          <WifiOff size={14} /> Офлайн / переподключение…
         </div>
       )}
-      {shownError && <div className="error">{shownError}</div>}
+      {!standalone && !pushOn && (
+        <div className="notice">
+          <Bell size={14} /> iOS: откройте с иконки «На экране Домой» и включите push
+        </div>
+      )}
+      {shownError && <div className="error" style={{ margin: '8px 12px 0' }}>{shownError}</div>}
       {debugOpen && (
-        <div className="card" style={{ margin: 8 }}>
+        <div className="debug">
           <div className="small">
             online={String(online)} fromCache={String(fromCache)} snapshots={snapCount} msgs=
             {visible.length}
@@ -132,49 +225,72 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
           {snapError && <div className="small">snap err: {snapError}</div>}
           <div className="small muted">
             iOS: сообщения в фоне приходят только пушем. Если snap растёт, а пуша нет — смотри
-            строку push выше (там же видно skipped/FAIL).
+            строку push выше.
           </div>
         </div>
       )}
 
       <div className="list">
-        {visible.map((m) => {
+        {items.map(({ m, day, showDay, grouped }) => {
           const mine = m.senderId === user.uid;
           return (
-            <div key={m.id} className={mine ? 'msg mine' : 'msg theirs'}>
-              {m.kind === 'text' ? (
-                <div className="bubble">
-                  {m.decryptError ? <i>Не удалось расшифровать</i> : m.text}
-                  <div className="meta">
-                    {new Date(m.createdAtMs).toLocaleTimeString()} ·{' '}
-                    {m.pending ? (m.status === 'error' ? 'ошибка' : 'отправка…') : 'отправлено'}
-                    {m.pending && m.status === 'error' && (
-                      <button
-                        onClick={() => {
-                          const draft = retryToDraft(m.clientMessageId);
-                          if (draft) setText(draft);
-                        }}
-                      >
-                        ↻ в поле ввода
-                      </button>
-                    )}
+            <div key={m.id} style={{ display: 'contents' }}>
+              {showDay && <div className="day-divider">{day}</div>}
+              <div className={`msg${mine ? ' mine' : ' theirs'}${grouped ? ' grouped' : ''}`}>
+                {m.kind === 'text' ? (
+                  <div className="bubble">
+                    {m.decryptError ? <i>Не удалось расшифровать</i> : m.text}
+                    <div className="meta">
+                      {timeLabel(m.createdAtMs)}
+                      {m.pending ? (
+                        m.status === 'error' ? (
+                          <button
+                            onClick={() => {
+                              const draft = retryToDraft(m.clientMessageId);
+                              if (draft) setText(draft);
+                            }}
+                          >
+                            ошибка · вернуть в ввод
+                          </button>
+                        ) : (
+                          <Clock size={12} />
+                        )
+                      ) : (
+                        mine && <CheckCheck size={13} />
+                      )}
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <div className="bubble">
-                  <button
-                    disabled={!ENABLE_MEDIA || media.viewerLoading === m.id}
-                    onClick={() => ENABLE_MEDIA && void media.openPhoto(m)}
-                  >
-                    {media.viewerLoading === m.id
-                      ? 'Загрузка…'
-                      : `📷 Фото (${Math.round((m.size ?? 0) / 1024)} КБ, шифр) — открыть`}
-                  </button>
-                  <div className="meta">
-                    {new Date(m.createdAtMs).toLocaleTimeString()} · отправлено
+                ) : (
+                  <div className="bubble bubble-photo">
+                    {(() => {
+                      const st = media.photos[m.id];
+                      if (!st || st.status === 'loading') return <div className="photo-loading" />;
+                      if (st.status === 'error') {
+                        return (
+                          <div className="photo-error">
+                            Не удалось загрузить фото
+                            <button onClick={() => media.retryPhoto(m)}>
+                              <RefreshCw size={13} /> Повторить
+                            </button>
+                          </div>
+                        );
+                      }
+                      return (
+                        <img
+                          src={st.url}
+                          alt="фото"
+                          loading="lazy"
+                          onClick={() => media.openViewer(m.id)}
+                        />
+                      );
+                    })()}
+                    <div className="meta">
+                      {timeLabel(m.createdAtMs)}
+                      {mine && <CheckCheck size={13} />}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           );
         })}
@@ -182,15 +298,6 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
       </div>
 
       <form className="composer" onSubmit={(e) => void onSubmit(e)}>
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Сообщение (шифруется)"
-          maxLength={4000}
-        />
-        <button type="submit" disabled={sending || !text.trim()}>
-          {sending ? '…' : '➤'}
-        </button>
         {ENABLE_MEDIA && (
           <>
             <input
@@ -204,21 +311,41 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
                 if (f) void media.sendPhoto(f);
               }}
             />
-            <button type="button" disabled={media.photoBusy} onClick={() => fileRef.current?.click()}>
-              {media.photoBusy ? '…' : '📷'}
+            <button
+              type="button"
+              className="icon-btn"
+              disabled={media.photoBusy}
+              onClick={() => fileRef.current?.click()}
+              title="Отправить фото"
+              aria-label="Отправить фото"
+            >
+              {media.photoBusy ? <Loader2 size={20} className="spin" /> : <ImagePlus size={20} />}
             </button>
           </>
         )}
+        <input
+          className="composer-input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Сообщение"
+          maxLength={4000}
+        />
+        <button
+          type="submit"
+          className="send-btn"
+          disabled={sending || !text.trim()}
+          aria-label="Отправить"
+        >
+          {sending ? <Loader2 size={18} className="spin" /> : <Send size={18} />}
+        </button>
       </form>
 
       {ENABLE_MEDIA && media.viewer && (
-        <div className="modal" onClick={() => media.closeViewer()}>
-          <img
-            src={media.viewer.url}
-            alt="расшифрованное фото"
-            onClick={(e) => e.stopPropagation()}
-          />
-          <button onClick={() => media.closeViewer()}>Закрыть</button>
+        <div className="modal viewer" onClick={() => media.closeViewer()}>
+          <img src={media.viewer.url} alt="фото" onClick={(e) => e.stopPropagation()} />
+          <button className="viewer-close" onClick={() => media.closeViewer()}>
+            <X size={16} /> Закрыть
+          </button>
         </div>
       )}
     </div>

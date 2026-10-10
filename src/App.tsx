@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { KeyRound, Trash2, X } from 'lucide-react';
 import { AuthProvider, useAuth } from './lib/auth';
 import { isFirebaseConfigured } from './lib/firebase';
 import { exportRoomKeyToString } from './lib/crypto';
 import { clearRoomKey, loadRoomKey } from './lib/keystore';
 import { disablePush } from './lib/push';
+import { applyTheme, initialTheme } from './lib/theme';
 import Login from './components/Login';
 import PairingGate from './components/PairingGate';
 import Chat from './components/Chat';
@@ -14,6 +16,11 @@ function Shell() {
   const [roomKey, setRoomKey] = useState<CryptoKey | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [keyString, setKeyString] = useState('');
+
+  // Тема нужна и на экранах входа/спаривания (в чате — тоггл через useTheme).
+  useEffect(() => {
+    applyTheme(initialTheme());
+  }, []);
 
   const userUid = user?.uid ?? null;
   useEffect(() => {
@@ -79,12 +86,28 @@ function Shell() {
       {showKey && (
         <div className="modal" onClick={() => setShowKey(false)}>
           <div className="card" onClick={(e) => e.stopPropagation()}>
-            <h3>Room key для второго устройства</h3>
-            {keyString && <QRCodeSVG value={keyString} size={220} />}
-            <textarea readOnly value={keyString} rows={3} style={{ width: '100%' }} />
+            <div className="auth-head">
+              <div className="auth-logo">
+                <KeyRound size={20} />
+              </div>
+              <h3 style={{ margin: 0 }}>Room key для второго устройства</h3>
+            </div>
+            {keyString && (
+              <div className="modal-qr">
+                <QRCodeSVG value={keyString} size={220} />
+              </div>
+            )}
+            <label className="field">
+              Код ключа
+              <textarea readOnly value={keyString} rows={3} />
+            </label>
             <div className="row">
-              <button onClick={() => setShowKey(false)}>Закрыть</button>
-              <button onClick={() => void handleWipeDevice()}>Удалить ключ с этого устройства</button>
+              <button className="btn" onClick={() => setShowKey(false)}>
+                <X size={17} /> Закрыть
+              </button>
+              <button className="btn" onClick={() => void handleWipeDevice()}>
+                <Trash2 size={17} /> Удалить ключ с этого устройства
+              </button>
             </div>
           </div>
         </div>

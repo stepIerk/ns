@@ -1,5 +1,12 @@
-// Google Drive через service account (вариант A: Drive самого SA).
-// Scope drive.file — только файлы, созданные приложением.
+// Google Drive через личный OAuth пользователя (вариант B).
+// Service account для хранения НЕ годится: у SA нет квоты Drive
+// (Google отвечает 403 storageQuotaExceeded "Service Accounts do not have
+// storage quota"). Поэтому файлы грузим от имени человека: его квота 15 ГБ,
+// папка ns-messenger видна в его Drive (лежат только шифротексты).
+// Scope drive.file — приложение видит лишь свои файлы.
+// ВАЖНО: consent screen в тестовом режиме гасит refresh token через ~7 дней —
+// тогда загрузка начнёт падать с invalid_grant, надо переавторизоваться
+// (см. GOOGLE_OAUTH_* в env.local.example) и обновить env версии функции.
 //
 // Загрузка идёт ТОЛЬКО через сервер (прокси чанками), браузер к Google
 // напрямую не ходит — иначе PUT из браузера упирается в CORS/403
@@ -11,32 +18,69 @@ const { google } = require('googleapis');
 
 const FOLDER_NAME = 'ns-messenger';
 
-let authClient = null;
+let oauthClient = null;
 let folderIdCache = null;
 
-function saCredentials() {
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw Object.assign(new Error('Missing GOOGLE_SERVICE_ACCOUNT_JSON'), { status: 500 });
-  return JSON.parse(raw);
+function oauthConfig() {
+  const clientId = (process.env.GOOGLE_OAUTH_CLIENT_ID || '').trim();
+  const clientSecret = (process.env.GOOGLE_OAUTH_CLIENT_SECRET || '').trim();
+  const refreshToken = (process.env.GOOGLE_OAUTH_REFRESH_TOKEN || '').trim();
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw Object.assign(
+      new Error('Missing GOOGLE_OAUTH_* env (need client id + secret + refresh token)'),
+      { status: 500 },
+    );
+  }
+  return { clientId, clientSecret, refreshToken };
+}
+
+// Google на ошибках отдаёт JSON {error:{errors:[{reason,message}], message}}.
+// Поле reason и есть диагноз (напр. storageQuotaExceeded, forbidden,
+// rateLimitExceeded) — без него виден только голый статус вроде 403.
+async function googleError(res) {
+  try {
+    const t = await res.text();
+    if (!t) return '';
+    try {
+      const j = JSON.parse(t);
+      const e = (j && j.error) || {};
+      const first = (e.errors && e.errors[0]) || {};
+      const reason = first.reason || e.code || res.status;
+      const msg = first.message || e.message || t;
+      return `: ${reason} — ${String(msg).slice(0, 200)}`;
+    } catch {
+      return `: ${t.slice(0, 200)}`;
+    }
+  } catch {
+    return '';
+  }
 }
 
 async function getAuthClient() {
-  if (!authClient) {
-    const auth = new google.auth.GoogleAuth({
-      credentials: saCredentials(),
-      scopes: ['https://www.googleapis.com/auth/drive.file'],
-    });
-    authClient = await auth.getClient();
+  if (!oauthClient) {
+    const { clientId, clientSecret, refreshToken } = oauthConfig();
+    oauthClient = new google.auth.OAuth2(clientId, clientSecret);
+    oauthClient.setCredentials({ refresh_token: refreshToken });
   }
-  return authClient;
+  return oauthClient;
 }
 
 async function accessToken() {
   const client = await getAuthClient();
-  const res = await client.getAccessToken();
-  const token = typeof res === 'string' ? res : res && res.token;
-  if (!token) throw Object.assign(new Error('Drive auth failed'), { status: 500 });
-  return token;
+  try {
+    // Access token обновляется сам из refresh_token. Если refresh token
+    // протух/отозван (тестовый режим consent screen — ~7 дней), тут упадёт invalid_grant.
+    const res = await client.getAccessToken();
+    const token = typeof res === 'string' ? res : res && res.token;
+    if (!token) throw new Error('empty token');
+    return token;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw Object.assign(
+      new Error(`Drive auth failed: ${msg} (refresh token expired? authorize again)`),
+      { status: 500 },
+    );
+  }
 }
 
 async function ensureFolderId() {
@@ -47,7 +91,7 @@ async function ensureFolderId() {
   const list = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&pageSize=1`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!list.ok) throw Object.assign(new Error(`Drive folder lookup failed: ${list.status}`), { status: 502 });
+  if (!list.ok) throw Object.assign(new Error(`Drive folder lookup failed: ${list.status}${await googleError(list)}`), { status: 502 });
   const data = await list.json();
   if (data.files && data.files.length > 0) {
     folderIdCache = data.files[0].id;
@@ -58,7 +102,7 @@ async function ensureFolderId() {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' }),
   });
-  if (!created.ok) throw Object.assign(new Error(`Drive folder create failed: ${created.status}`), { status: 502 });
+  if (!created.ok) throw Object.assign(new Error(`Drive folder create failed: ${created.status}${await googleError(created)}`), { status: 502 });
   folderIdCache = (await created.json()).id;
   return folderIdCache;
 }
@@ -80,7 +124,7 @@ async function initResumableUpload({ name, mimeType }) {
     headers,
     body: JSON.stringify({ name, parents: [folderId], appProperties: { app: 'ns' } }),
   });
-  if (!res.ok) throw Object.assign(new Error(`Drive upload init failed: ${res.status}`), { status: 502 });
+  if (!res.ok) throw Object.assign(new Error(`Drive upload init failed: ${res.status}${await googleError(res)}`), { status: 502 });
   const sessionUrl = res.headers.get('location');
   if (!sessionUrl) throw Object.assign(new Error('Drive upload init: no session url'), { status: 502 });
   return { sessionUrl };
@@ -125,7 +169,7 @@ async function uploadChunk({ sessionUrl, start, end, total, chunk }) {
     body: chunk,
   });
   if (res.status === 308) return { done: false }; // Resume Incomplete
-  if (!res.ok) throw Object.assign(new Error(`Drive upload chunk failed: ${res.status}`), { status: 502 });
+  if (!res.ok) throw Object.assign(new Error(`Drive upload chunk failed: ${res.status}${await googleError(res)}`), { status: 502 });
   const meta = await res.json();
   if (!meta || !meta.id) throw Object.assign(new Error('Drive upload: no file id'), { status: 502 });
   return { done: true, fileId: meta.id };
@@ -147,7 +191,7 @@ async function downloadBytes({ fileId, start, end }) {
   const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers });
   if (res.status === 404) throw Object.assign(new Error('file not found'), { status: 404 });
   if (!res.ok && res.status !== 206) {
-    throw Object.assign(new Error(`Drive download failed: ${res.status}`), { status: 502 });
+    throw Object.assign(new Error(`Drive download failed: ${res.status}${await googleError(res)}`), { status: 502 });
   }
   const buf = Buffer.from(await res.arrayBuffer());
   let total = buf.length;

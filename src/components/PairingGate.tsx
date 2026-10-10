@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { ArrowLeft, Camera, KeyRound, QrCode } from 'lucide-react';
 import {
   exportRoomKeyToString,
   generateRoomKey,
@@ -115,25 +116,44 @@ export default function PairingGate({ onReady }: Props) {
   return (
     <div className="screen">
       <div className="card">
-        <h2>Спаривание устройств</h2>
-        <p className="muted">Нужен общий room key (AES-256). Ключ хранится только в этом браузере, на сервер не отправляется.</p>
+        <div className="auth-head">
+          <div className="auth-logo">
+            <KeyRound size={20} />
+          </div>
+          <h2>Спаривание устройств</h2>
+        </div>
+        <p className="muted small">Нужен общий room key (AES-256). Ключ хранится только в этом браузере, на сервер не отправляется.</p>
         {err && <div className="error">{err}</div>}
 
         {mode === 'choose' && (
           <div className="row">
-            <button onClick={create} disabled={busy}>{busy ? '…' : 'Создать ключ (первое устройство)'}</button>
-            <button onClick={() => setMode('enter')}>У меня есть код / QR</button>
-            <button onClick={startScan}>Сканировать камерой</button>
+            <button className="btn btn-primary" onClick={create} disabled={busy}>
+              <KeyRound size={17} /> {busy ? '…' : 'Создать ключ'}
+            </button>
+            <button className="btn" onClick={() => setMode('enter')}>
+              <QrCode size={17} /> У меня есть код / QR
+            </button>
+            <button className="btn" onClick={startScan}>
+              <Camera size={17} /> Сканировать камерой
+            </button>
           </div>
         )}
 
         {mode === 'show' && (
           <div>
-            <p>Покажите этот QR второму устройству. Потом нажмите «Готово».</p>
-            {qrValue && <QRCodeSVG value={qrValue} size={220} />}
-            <textarea readOnly value={qrValue} rows={3} style={{ width: '100%', marginTop: 8 }} />
+            <p className="small">Покажите этот QR второму устройству. Потом нажмите «Готово».</p>
+            {qrValue && (
+              <div className="modal-qr">
+                <QRCodeSVG value={qrValue} size={220} />
+              </div>
+            )}
+            <label className="field">
+              Или скопируйте код вручную
+              <textarea readOnly value={qrValue} rows={3} />
+            </label>
             <div className="row">
               <button
+                className="btn btn-primary"
                 onClick={async () => {
                   const k = await loadRoomKey();
                   if (k) onReady(k);
@@ -147,24 +167,28 @@ export default function PairingGate({ onReady }: Props) {
 
         {mode === 'enter' && (
           <div>
-            <label>
+            <label className="field">
               Код ключа (ns1.…)
-              <textarea value={code} onChange={(e) => setCode(e.target.value)} rows={3} style={{ width: '100%' }} />
+              <textarea value={code} onChange={(e) => setCode(e.target.value)} rows={3} />
             </label>
             <div className="row">
-              <button disabled={busy || !code.trim()} onClick={() => commitCode(code)}>
+              <button className="btn btn-primary" disabled={busy || !code.trim()} onClick={() => commitCode(code)}>
                 {busy ? '…' : 'Сохранить ключ'}
               </button>
-              <button onClick={() => setMode('choose')}>Назад</button>
+              <button className="btn" onClick={() => setMode('choose')}>
+                <ArrowLeft size={17} /> Назад
+              </button>
             </div>
           </div>
         )}
 
         {mode === 'scan' && (
           <div>
-            <video ref={videoRef} style={{ width: '100%', background: '#000' }} muted playsInline />
+            <video ref={videoRef} className="scan-video" muted playsInline />
             <div className="row">
-              <button onClick={() => { scanStopRef.current?.(); setMode('enter'); }}>Ввести вручную</button>
+              <button className="btn" onClick={() => { scanStopRef.current?.(); setMode('enter'); }}>
+                Ввести вручную
+              </button>
             </div>
           </div>
         )}
