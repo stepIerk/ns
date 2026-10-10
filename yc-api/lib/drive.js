@@ -1,9 +1,12 @@
 // Google Drive через service account (вариант A: Drive самого SA).
-// Scope drive.file — только файлы, созданные приложением. Байты файлов
-// через сервер НЕ идут при загрузке: функция лишь открывает resumable-сессию
-// и отдаёт sessionUrl, клиент льёт шифротекст напрямую в Google.
-// Скачивание — прокси чанками (Drive не умеет presigned-ссылки),
-// сервер при этом видит только шифротекст.
+// Scope drive.file — только файлы, созданные приложением.
+//
+// Загрузка идёт ТОЛЬКО через сервер (прокси чанками), браузер к Google
+// напрямую не ходит — иначе PUT из браузера упирается в CORS/403
+// (Google не отдаёт ACAO на ответы-ошибки upload-эндпоинта).
+// Флоу: initResumableUpload (сервер) → N × uploadChunk (сервер, Content-Range)
+// Сервер при этом видит только шифротекст.
+// Скачивание — тоже прокси чанками (Drive не умеет presigned-ссылки).
 const { google } = require('googleapis');
 
 const FOLDER_NAME = 'ns-messenger';
@@ -60,22 +63,18 @@ async function ensureFolderId() {
   return folderIdCache;
 }
 
-/** Открыть resumable-сессию загрузки. Возвращает sessionUrl для прямого PUT клиента.
- * ВАЖНО для браузера: upload-фронтенд Google привязывает CORS будущей сессии
- * к заголовку Origin запроса инициации. Без него ответы на PUT из браузера
- * приходят без ACAO (и с 403) — см. доки GCS resumable uploads.
- * Поэтому пробрасываем Origin фронтенда (тот же, что браузер пришлёт на PUT).
+/** Открыть resumable-сессию загрузки. Возвращает sessionUrl.
+ * Сессия одноразовая, живёт ~неделю; сам URL — только для серверных PUT
+ * из uploadChunk ниже, клиентам sessionUrl больше не выдаём напрямую
+ * (см. action media.upload-chunk в index.js).
  */
-async function initResumableUpload({ name, mimeType, origin }) {
+async function initResumableUpload({ name, mimeType }) {
   const token = await accessToken();
   const folderId = await ensureFolderId();
   const headers = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json; charset=UTF-8',
   };
-  if (origin && typeof origin === 'string' && /^https:\/\/[^/]+$/.test(origin.trim())) {
-    headers.Origin = origin.trim();
-  }
   const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
     method: 'POST',
     headers,
@@ -85,6 +84,51 @@ async function initResumableUpload({ name, mimeType, origin }) {
   const sessionUrl = res.headers.get('location');
   if (!sessionUrl) throw Object.assign(new Error('Drive upload init: no session url'), { status: 502 });
   return { sessionUrl };
+}
+
+/**
+ * Долить чанк шифротекста в resumable-сессию (сервер → Google, без CORS).
+ * start/end — байтовые границы (оба включительно), total — полный размер.
+ * Возвращает { done: false } для промежуточных чанков (Google отвечает 308)
+ * или { done: true, fileId } для последнего.
+ */
+async function uploadChunk({ sessionUrl, start, end, total, chunk }) {
+  if (typeof sessionUrl !== 'string') {
+    throw Object.assign(new Error('bad sessionUrl'), { status: 400 });
+  }
+  // SSRF-guard: sessionUrl обязан вести на upload-эндпоинт Drive и никуда ещё.
+  let u;
+  try {
+    u = new URL(sessionUrl);
+  } catch {
+    throw Object.assign(new Error('bad sessionUrl'), { status: 400 });
+  }
+  if (u.protocol !== 'https:' || u.hostname !== 'www.googleapis.com' ||
+      !u.pathname.startsWith('/upload/drive/v3/files')) {
+    throw Object.assign(new Error('bad sessionUrl'), { status: 400 });
+  }
+  if (!Number.isInteger(start) || !Number.isInteger(end) || !Number.isInteger(total) ||
+      start < 0 || end < start || end >= total || total <= 0) {
+    throw Object.assign(new Error('bad range'), { status: 400 });
+  }
+  if (!Buffer.isBuffer(chunk) || chunk.length !== end - start + 1) {
+    throw Object.assign(new Error('bad chunk'), { status: 400 });
+  }
+  const token = await accessToken();
+  const res = await fetch(sessionUrl, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Length': String(chunk.length),
+      'Content-Range': `bytes ${start}-${end}/${total}`,
+    },
+    body: chunk,
+  });
+  if (res.status === 308) return { done: false }; // Resume Incomplete
+  if (!res.ok) throw Object.assign(new Error(`Drive upload chunk failed: ${res.status}`), { status: 502 });
+  const meta = await res.json();
+  if (!meta || !meta.id) throw Object.assign(new Error('Drive upload: no file id'), { status: 502 });
+  return { done: true, fileId: meta.id };
 }
 
 /**
@@ -118,4 +162,4 @@ async function downloadBytes({ fileId, start, end }) {
   return { bytes: buf, total };
 }
 
-module.exports = { initResumableUpload, downloadBytes };
+module.exports = { initResumableUpload, uploadChunk, downloadBytes };

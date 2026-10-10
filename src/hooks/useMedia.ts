@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { addDoc, collection, doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { getFirebase } from '../lib/firebase';
-import { b64ToBytes, decryptBytes, encryptBytes } from '../lib/crypto';
+import { b64ToBytes, bufToB64, decryptBytes, encryptBytes } from '../lib/crypto';
 import { prepareImage } from '../lib/image';
 import { authedPost } from '../lib/api';
 import type { ChatMessage, MessageDoc } from '../types';
 
-// Медиа-флоу (возвращён из старой реализации, почищен):
-// prepareImage → encryptBytes → upload-init → PUT ciphertext напрямую в Google
-// (сервер байтов не видит) → setDoc media → addDoc photo-message → push.
+// Медиа-флоу:
+// prepareImage → encryptBytes → upload-init → N × upload-chunk (base64, 1МБ)
+// через Yandex-функцию → setDoc media → addDoc photo-message → push.
+// Браузер к Google напрямую НЕ ходит (прямой PUT в upload-эндпоинт Google
+// из браузера упирается в CORS/403 без ACAO-заголовков).
 // Скачивание — прокси чанками 1МБ через API, сервер видит только шифротекст.
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const DOWNLOAD_CHUNK = 1024 * 1024;
+const UPLOAD_CHUNK = 1024 * 1024;
 const WRITE_TIMEOUT_MS = 30000;
 
 function withTimeout<T>(p: Promise<T>, ms = WRITE_TIMEOUT_MS): Promise<T> {
@@ -88,20 +91,27 @@ export function useMedia(
           '/api/media/upload-init',
           { mediaId, mimeType: mime, size: cipher.byteLength },
         );
-        const put = await fetch(sessionUrl, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: cipher,
-        });
-        if (!put.ok) throw new Error(`Drive upload failed: ${put.status}`);
-        const meta = (await put.json()) as { id?: string };
-        if (!meta.id) throw new Error('Drive не вернул id файла');
+        // Заливка шифротекста чанками через сервер (лимит запроса к функции 3.5МБ,
+        // чанк 1МБ → ~1.37МБ base64 + JSON — с запасом). Сервер доливает чанки
+        // в resumable-сессию Drive своим PUT с Content-Range.
+        const bytes = new Uint8Array(cipher);
+        const total = bytes.byteLength;
+        let driveFileId = '';
+        for (let start = 0; start < total; start += UPLOAD_CHUNK) {
+          const end = Math.min(start + UPLOAD_CHUNK - 1, total - 1);
+          const r = await authedPost<{ done: boolean; fileId?: string }>(
+            '/api/media/upload-chunk',
+            { sessionUrl, start, end, total, data: bufToB64(bytes.slice(start, end + 1)) },
+          );
+          if (r.done) driveFileId = r.fileId ?? '';
+        }
+        if (!driveFileId) throw new Error('Drive не вернул id файла');
         const fb = getFirebase();
         if (!fb) throw new Error('Firebase не настроен');
         await withTimeout(
           setDoc(doc(fb.db, 'media', mediaId), {
             messageId: clientMessageId,
-            driveFileId: meta.id,
+            driveFileId,
             size: cipher.byteLength,
             mimeType: mime,
             iv: ivB64,
@@ -117,7 +127,7 @@ export function useMedia(
             clientTs: Date.now(),
             kind: 'photo',
             mediaId,
-            driveFileId: meta.id,
+            driveFileId,
             mimeType: mime,
             size: cipher.byteLength,
             iv: ivB64,

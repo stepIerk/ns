@@ -2,17 +2,18 @@
 // Invoke-URL Яндекса не маршрутизирует по пути (всё после ID функции — ошибка),
 // поэтому: GET корня = health, POST корня с полем action в теле:
 //   {action:'media.upload-init', mediaId, mimeType, size} → {sessionUrl}
+//   {action:'media.upload-chunk', sessionUrl, start, end, total, data(b64)} → {done, fileId?}
 //   {action:'media.download', driveFileId, start?, end?} → {data: base64, total}
 //   {action:'push', messageId} → {ok: true}
-// Все POST требуют Authorization: Bearer <Firebase ID token>, UID в ALLOWED_UIDS.
+// Все POST требуют X-Firebase-Token: <Firebase ID token>, UID в ALLOWED_UIDS.
 const { handleCors } = require('./lib/cors');
 const { requireUid } = require('./lib/auth');
 const { allowedUids, getDoc, deleteDoc } = require('./lib/firestore');
-const { initResumableUpload, downloadBytes } = require('./lib/drive');
+const { initResumableUpload, uploadChunk, downloadBytes } = require('./lib/drive');
 const webpush = require('web-push');
 
 const MAX_CIPHER_BYTES = 12 * 1024 * 1024; // 10МБ + overhead AES-GCM
-const CHUNK_BYTES = 1024 * 1024; // чанки скачивания 1МБ
+const CHUNK_BYTES = 1024 * 1024; // чанки скачивания/загрузки 1МБ (запрос к функции < 3.5МБ)
 
 let vapidSet = false;
 
@@ -67,23 +68,44 @@ async function uploadInit(event, corsHeaders) {
   if (!size || typeof size !== 'number' || size <= 0 || size > MAX_CIPHER_BYTES) {
     return json(400, { error: 'bad size (max 10MB plaintext + overhead)' }, corsHeaders);
   }
-  // Только ciphertext. Сервер байты не видит: клиент льёт их напрямую в sessionUrl.
-  // Пробрасываем Origin браузера в инициацию сессии — иначе Google не отдаст
-  // CORS-заголовки на PUT из браузера (см. initResumableUpload).
-  const headers = event.headers || {};
-  let callerOrigin = '';
-  for (const k of Object.keys(headers)) {
-    if (k.toLowerCase() === 'origin') {
-      const v = headers[k];
-      callerOrigin = Array.isArray(v) ? v.join(', ') : String(v || '');
-    }
-  }
+  // Только ciphertext. Сервер байты видит лишь транзитом чанками:
+  // клиент шлёт base64-чанки в media.upload-chunk, функция доливает их
+  // в resumable-сессию серверным PUT (без CORS — браузер к Google не ходит).
   const { sessionUrl } = await initResumableUpload({
     name: `${uid}_${mediaId}`,
     mimeType,
-    origin: callerOrigin,
   });
   return json(200, { sessionUrl }, corsHeaders);
+}
+
+async function uploadChunkHandler(event, corsHeaders) {
+  await requireUid(event.headers || {});
+  const body = event.parsedBody || parseBody(event);
+  const { sessionUrl, start, end, total, data } = body;
+  if (typeof sessionUrl !== 'string' || !sessionUrl.startsWith('https://www.googleapis.com/upload/')) {
+    return json(400, { error: 'bad sessionUrl' }, corsHeaders);
+  }
+  if (!Number.isInteger(start) || !Number.isInteger(end) || !Number.isInteger(total) ||
+      start < 0 || end < start || end >= total || total <= 0 || total > MAX_CIPHER_BYTES) {
+    return json(400, { error: `bad range (max file ${MAX_CIPHER_BYTES} bytes)` }, corsHeaders);
+  }
+  if (end - start + 1 > CHUNK_BYTES) {
+    return json(400, { error: `bad chunk (max ${CHUNK_BYTES} bytes)` }, corsHeaders);
+  }
+  if (typeof data !== 'string' || data.length === 0) {
+    return json(400, { error: 'bad data' }, corsHeaders);
+  }
+  let chunk;
+  try {
+    chunk = Buffer.from(data, 'base64');
+  } catch {
+    return json(400, { error: 'bad data encoding' }, corsHeaders);
+  }
+  if (chunk.length !== end - start + 1) {
+    return json(400, { error: 'chunk size mismatch' }, corsHeaders);
+  }
+  const r = await uploadChunk({ sessionUrl, start, end, total, chunk });
+  return json(200, r, corsHeaders);
 }
 
 async function download(event, corsHeaders) {
@@ -154,6 +176,7 @@ module.exports.handler = async function (event, context) {
     event.parsedBody = body;
     const action = body.action;
     if (action === 'media.upload-init') return await uploadInit(event, corsHeaders);
+    if (action === 'media.upload-chunk') return await uploadChunkHandler(event, corsHeaders);
     if (action === 'media.download') return await download(event, corsHeaders);
     if (action === 'push') return await push(event, corsHeaders);
     return json(404, { error: 'unknown action' }, corsHeaders);

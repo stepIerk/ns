@@ -10,6 +10,7 @@ import { getFirebase } from './firebase';
  */
 function actionFor(path: string): string {
   if (path.endsWith('/api/media/upload-init')) return 'media.upload-init';
+  if (path.endsWith('/api/media/upload-chunk')) return 'media.upload-chunk';
   if (path.endsWith('/api/media/download')) return 'media.download';
   if (path.endsWith('/api/push')) return 'push';
   throw new Error(`unknown api path: ${path}`);
