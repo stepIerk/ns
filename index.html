@@ -23,6 +23,15 @@
         }
         document.documentElement.dataset.theme = t;
       } catch (e) {}
+      try {
+        // Высота приложения: в iOS standalone 100dvh врёт (минус статус-бар,
+        // мёртвая полоса снизу) — там только 100vh с холодного старта.
+        var st = window.navigator.standalone === true;
+        try {
+          st = st || matchMedia('(display-mode: standalone)').matches;
+        } catch (e) {}
+        document.documentElement.style.setProperty('--app-h', st ? '100vh' : '100dvh');
+      } catch (e) {}
     </script>
   </head>
   <body>
