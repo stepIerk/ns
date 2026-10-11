@@ -7,6 +7,7 @@ import { exportRoomKeyToString } from './lib/crypto';
 import { clearRoomKey, loadRoomKey } from './lib/keystore';
 import { disablePush } from './lib/push';
 import { applyTheme, initialTheme } from './lib/theme';
+import { ensurePersist } from './lib/db';
 import Login from './components/Login';
 import PairingGate from './components/PairingGate';
 import Chat from './components/Chat';
@@ -20,6 +21,8 @@ function Shell() {
   // Тема нужна и на экранах входа/спаривания (в чате — тоггл через useTheme).
   useEffect(() => {
     applyTheme(initialTheme());
+    // Просим систему не вычищать origin (IDB-зеркала) при нехватке места.
+    ensurePersist().catch(() => {});
   }, []);
 
   const userUid = user?.uid ?? null;

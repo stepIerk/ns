@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
   Bell,
@@ -22,6 +22,7 @@ import {
 import { useChat } from '../hooks/useChat';
 import { useMedia } from '../hooks/useMedia';
 import { isOnline, isTyping, lastSeenText, usePresence } from '../hooks/usePresence';
+import { dbStats, storageEstimate } from '../lib/db';
 import { useTheme } from '../lib/theme';
 import { ENABLE_MEDIA } from '../lib/flags';
 import { disablePush, enablePush, hasPushSubscription, registerSW } from '../lib/push';
@@ -73,6 +74,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     sendText,
     retryToDraft,
     notifyMessage,
+    loadOlder,
   } = useChat(user.uid, roomKey, presence.seenTs ?? undefined);
 
   const media = useMedia(user.uid, roomKey, notifyMessage);
@@ -87,6 +89,17 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
   );
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const topSentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadingOlderRef = useRef(false);
+  const bootedRef = useRef(false);
+  // Окно рендера: DOM держим маленьким (iPhone), полный объём — в IDB/state.
+  const [renderCount, setRenderCount] = useState(120);
+  const RENDER_STEP = 80;
+  const RENDER_MAX = 500; // потолок DOM-узлов; история дальше — в IDB
+  // Якорь скролла для бесшовной догрузки вверх.
+  const anchorRef = useRef<{ h: number; top: number } | null>(null);
+  const [cacheInfo, setCacheInfo] = useState<string | null>(null);
 
   // SW регистрируем заранее (не в жесте), чтобы в жесте остались только
   // permission + subscribe — это требование iOS PWA.
@@ -121,8 +134,78 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, [markSeen]);
 
+  // Догрузка истории по скроллу вверх: сначала расширяем окно рендера,
+  // при упоре — loadOlder (IDB-first, сервер только при дне кэша).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    const el = topSentinelRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        if (loadingOlderRef.current || renderCount >= RENDER_MAX) return;
+        const listEl = listRef.current;
+        if (listEl) anchorRef.current = { h: listEl.scrollHeight, top: listEl.scrollTop };
+        if (visible.length > renderCount) {
+          setRenderCount((c) => c + RENDER_STEP);
+          return;
+        }
+        loadingOlderRef.current = true;
+        void loadOlder().then((added) => {
+          loadingOlderRef.current = false;
+          if (added > 0) setRenderCount((c) => c + RENDER_STEP);
+          else anchorRef.current = null;
+        });
+      },
+      { root: listRef.current },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [visible.length, renderCount, loadOlder]);
+
+  // Применяем якорь после расширения окна (позиция не прыгает).
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    const a = anchorRef.current;
+    if (el && a) {
+      el.scrollTop = el.scrollHeight - a.h + a.top;
+      anchorRef.current = null;
+    }
+  });
+
+  // Дебаг кэша: локальные счётчики, сети не касаемся.
+  useEffect(() => {
+    if (!debugOpen) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const [s, e] = await Promise.all([dbStats(), storageEstimate()]);
+        if (!alive) return;
+        const mb = (b: number) => `${(b / 1048576).toFixed(1)} МБ`;
+        setCacheInfo(
+          `idb: msgs=${s.msgs} blobs=${s.blobs} (${mb(s.bytes)})` +
+            (e ? ` · device: ${mb(e.usage)} / ${mb(e.quota)}` : ''),
+        );
+      } catch {
+        if (alive) setCacheInfo('idb: недоступен');
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [debugOpen, visible.length]);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    // Не дёргаем ленту, если пользователь читает старое (пузырь «печатает» не в счёт).
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+    if (!bootedRef.current || nearBottom) {
+      bottomRef.current?.scrollIntoView({
+        behavior: bootedRef.current ? 'smooth' : 'auto',
+        block: 'end',
+      });
+      bootedRef.current = true;
+    }
   }, [visible.length]);
 
   const onSubmit = async (e?: React.FormEvent) => {
@@ -257,6 +340,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
             {visible.length}
           </div>
           <div className="small">api={apiBase}</div>
+          {cacheInfo && <div className="small">{cacheInfo}</div>}
           {pushStatus && <div className="small">{pushStatus}</div>}
           {snapError && <div className="small">snap err: {snapError}</div>}
           <div className="small muted">
@@ -266,8 +350,9 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         </div>
       )}
 
-      <div className="list">
-        {items.map(({ m, day, showDay, grouped }) => {
+      <div className="list" ref={listRef}>
+        {visible.length > 0 && <div ref={topSentinelRef} aria-hidden />}
+        {items.slice(-renderCount).map(({ m, day, showDay, grouped }) => {
           const mine = m.senderId === user.uid;
           return (
             <div key={m.id} style={{ display: 'contents' }}>

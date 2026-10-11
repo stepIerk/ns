@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   addDoc,
   collection,
+  endBefore,
+  getDocs,
   limitToLast,
   onSnapshot,
   orderBy,
@@ -11,12 +13,22 @@ import {
 import { getFirebase } from '../lib/firebase';
 import { decryptText, encryptText } from '../lib/crypto';
 import { authedPost } from '../lib/api';
+import {
+  MSG_CAP,
+  msgNewest,
+  msgOlderThan,
+  msgPut,
+  msgTrim,
+  type StoredMsg,
+} from '../lib/db';
 import type { ChatMessage, MessageDoc } from '../types';
 
 // v1: только текстовые сообщения, один долгоживущий onSnapshot.
 // Внутри листенера НИКАКИХ записей — иначе loop "snapshot -> write -> snapshot"
 // и бесконечные POST в Write/channel. Receipts (deliveredAt/readAt) выкл.
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 50; // живой хвост слушателя (дельты после первой синхронизации)
+const BOOT_N = 200; // мгновенный старт из IDB
+const HISTORY_PAGE = 60; // страница истории по скроллу вверх
 const WRITE_TIMEOUT_MS = 30000;
 
 function withTimeout<T>(p: Promise<T>, ms = WRITE_TIMEOUT_MS): Promise<T> {
@@ -35,6 +47,87 @@ function withTimeout<T>(p: Promise<T>, ms = WRITE_TIMEOUT_MS): Promise<T> {
 function tsOf(d: MessageDoc): number {
   if (typeof d.clientTs === 'number') return d.clientTs;
   return Date.now();
+}
+
+/** Firestore-док → плоская IDB-запись (без Timestamp-объектов). */
+function docToRecord(id: string, v: MessageDoc): StoredMsg {
+  return {
+    id,
+    ts: tsOf(v),
+    clientMessageId: v.clientMessageId ?? id,
+    senderId: v.senderId ?? '?',
+    kind: (v.kind ?? 'text') === 'photo' ? 'photo' : 'text',
+    ciphertext: v.ciphertext,
+    iv: v.iv,
+    mediaId: v.mediaId,
+    driveFileId: v.driveFileId,
+    mimeType: v.mimeType,
+    size: v.size,
+  };
+}
+
+/** IDB-записи → ChatMessage (расшифровка текста; только чтение, записей нет). */
+async function recordsToChat(
+  key: CryptoKey,
+  records: StoredMsg[],
+  userUid: string,
+  seen: number | null,
+): Promise<ChatMessage[]> {
+  const out: ChatMessage[] = [];
+  for (const r of records) {
+    const mine = r.senderId === userUid;
+    const st: ChatMessage['status'] = mine && seen != null && r.ts <= seen ? 'read' : 'sent';
+    if (r.kind !== 'text') {
+      out.push({
+        id: r.id,
+        clientMessageId: r.clientMessageId,
+        senderId: r.senderId,
+        createdAtMs: r.ts,
+        kind: 'photo',
+        mediaId: r.mediaId,
+        driveFileId: r.driveFileId,
+        mimeType: r.mimeType,
+        size: r.size,
+        iv: r.iv,
+        text: '[фото — нажмите открыть]',
+        status: st,
+      });
+      continue;
+    }
+    const base: ChatMessage = {
+      id: r.id,
+      clientMessageId: r.clientMessageId,
+      senderId: r.senderId,
+      createdAtMs: r.ts,
+      kind: 'text',
+      status: st,
+    };
+    try {
+      if (r.ciphertext && r.iv) base.text = await decryptText(key, r.iv, r.ciphertext);
+      else base.decryptError = true;
+    } catch {
+      base.decryptError = true;
+    }
+    out.push(base);
+  }
+  return out;
+}
+
+/** Слияние по id (входящие побеждают), порядок по времени. Быстрый путь — append. */
+function mergeSorted(prev: ChatMessage[], add: ChatMessage[]): ChatMessage[] {
+  if (add.length === 0) return prev;
+  if (prev.length === 0) return [...add].sort((a, b) => a.createdAtMs - b.createdAtMs);
+  const prevMax = prev[prev.length - 1]?.createdAtMs ?? -Infinity;
+  const addMin = Math.min(...add.map((m) => m.createdAtMs));
+  if (addMin >= prevMax) {
+    const known = new Set(prev.map((m) => m.id));
+    const fresh = add.filter((m) => !known.has(m.id));
+    if (fresh.length === 0) return prev;
+    return [...prev, ...fresh];
+  }
+  const map = new Map(prev.map((m) => [m.id, m] as const));
+  for (const m of add) map.set(m.id, m);
+  return [...map.values()].sort((a, b) => a.createdAtMs - b.createdAtMs);
 }
 
 export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number) {
@@ -73,7 +166,30 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
     };
   }, []);
 
+  // Зеркало состояния для loadOlder (старт из IDB + постраничная история).
+  const messagesRef = useRef<ChatMessage[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  });
+
+  // Мгновенный старт из локального IDB-зеркала (0 запросов к серверу).
+  // Живой слушатель ниже догонит дельту и смержит по id.
+  useEffect(() => {
+    let alive = true;
+    msgNewest(BOOT_N)
+      .then((rows) => recordsToChat(keyRef.current, rows, userUid, peerSeenRef.current))
+      .then((booted) => {
+        if (alive && booted.length > 0) setMessages(booted);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [userUid]);
+
   // Единственная подписка. Живёт пока открыт чат (>30с, без churn).
+  // Сервер шлёт только хвост limitToLast (первичная синхронизация + дельты),
+  // историю вверх грузим только явным loadOlder по скроллу.
   useEffect(() => {
     const fb = getFirebase();
     if (!fb) return;
@@ -90,52 +206,14 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
         setSnapError(null);
         const key = keyRef.current;
         const docs = snap.docs;
-        // Только чтение + расшифровка. Записей здесь нет по design'у.
+        // Только чтение + расшифровка + зеркало в IDB. Записей здесь нет по design'у.
         void (async () => {
-          const out: ChatMessage[] = [];
-          for (const d of docs) {
-            const v = d.data() as MessageDoc;
-            const ts = tsOf(v);
-            const mine = (v.senderId ?? '?') === userUid;
-            const seen = peerSeenRef.current;
-            // read — только свои: пир отрендерил сообщение (seenTs >= clientTs).
-            const st: ChatMessage['status'] =
-              mine && seen != null && ts <= seen ? 'read' : 'sent';
-            // Медиа: photo-доки несут метадату для useMedia (открытие по тапу).
-            if ((v.kind ?? 'text') !== 'text') {
-              out.push({
-                id: d.id,
-                clientMessageId: v.clientMessageId ?? d.id,
-                senderId: v.senderId ?? '?',
-                createdAtMs: ts,
-                kind: 'photo',
-                mediaId: v.mediaId,
-                driveFileId: v.driveFileId,
-                mimeType: v.mimeType,
-                size: v.size,
-                iv: v.iv,
-                text: '[фото — нажмите открыть]',
-                status: st,
-              });
-              continue;
-            }
-            const base: ChatMessage = {
-              id: d.id,
-              clientMessageId: v.clientMessageId ?? d.id,
-              senderId: v.senderId ?? '?',
-              createdAtMs: ts,
-              kind: 'text',
-              status: st,
-            };
-            try {
-              if (v.ciphertext && v.iv) base.text = await decryptText(key, v.iv, v.ciphertext);
-              else base.decryptError = true;
-            } catch {
-              base.decryptError = true;
-            }
-            out.push(base);
-          }
-          setMessages(out);
+          const records = docs.map((d) => docToRecord(d.id, d.data() as MessageDoc));
+          // IDB-зеркало (best-effort, рендер не ждёт) + FIFO-трим.
+          msgPut(records).catch(() => {});
+          msgTrim(MSG_CAP).catch(() => {});
+          const out = await recordsToChat(key, records, userUid, peerSeenRef.current);
+          setMessages((prev) => mergeSorted(prev, out));
         })();
       },
       (e) => {
@@ -169,6 +247,57 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
       return changed ? next : prev;
     });
   }, [peerSeenTs, userUid]);
+
+  // История вверх: сначала IDB-зеркало (0 запросов), при упоре в дно кэша —
+  // одна страничная выборка с сервера курсором (биллится один раз и
+  // складывается в IDB). Пустая/короткая страница = истории больше нет.
+  // Возвращает сколько сообщений добавилось.
+  const exhaustedRef = useRef(false);
+  const loadOlder = useCallback(async (): Promise<number> => {
+    const list = messagesRef.current;
+    if (list.length === 0) return 0;
+    const oldest = list[0];
+    if (!oldest) return 0;
+    let rows: StoredMsg[];
+    try {
+      rows = await msgOlderThan(oldest.createdAtMs, oldest.id, HISTORY_PAGE);
+    } catch {
+      rows = [];
+    }
+    if (rows.length < HISTORY_PAGE && !exhaustedRef.current) {
+      try {
+        const fb = getFirebase();
+        if (fb) {
+          const page = query(
+            collection(fb.db, 'rooms', 'main', 'messages'),
+            orderBy('clientTs', 'asc'),
+            endBefore(oldest.createdAtMs),
+            limitToLast(HISTORY_PAGE),
+          );
+          const snap = await getDocs(page);
+          if (snap.docs.length < HISTORY_PAGE) exhaustedRef.current = true;
+          const fresh = snap.docs.map((d) => docToRecord(d.id, d.data() as MessageDoc));
+          if (fresh.length > 0) {
+            msgPut(fresh).catch(() => {});
+            // IDB-ряд + серверный ряд (дедуп по id при merge).
+            const have = new Set(rows.map((r) => r.id));
+            rows = [...fresh.filter((r) => !have.has(r.id)), ...rows].sort((a, b) =>
+              a.ts !== b.ts ? a.ts - b.ts : a.id < b.id ? -1 : 1,
+            );
+          }
+        }
+      } catch {
+        // Офлайн/ошибка — отдаём что нашли в IDB (возможно, 0).
+      }
+    }
+    if (rows.length === 0) return 0;
+    const mapped = await recordsToChat(keyRef.current, rows, userUid, peerSeenRef.current).catch(
+      () => [] as ChatMessage[],
+    );
+    if (mapped.length === 0) return 0;
+    setMessages((prev) => mergeSorted(prev, mapped));
+    return mapped.length;
+  }, [userUid]);
 
   const firePush = useCallback(async (messageId: string) => {
     if (seenPushRef.current.has(messageId)) return;
@@ -266,5 +395,6 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
     sendText,
     retryToDraft,
     notifyMessage: firePush,
+    loadOlder,
   };
 }

@@ -4,6 +4,7 @@ import { getFirebase } from '../lib/firebase';
 import { b64ToBytes, bufToB64, decryptBytes, encryptBytes } from '../lib/crypto';
 import { prepareImage } from '../lib/image';
 import { authedPost } from '../lib/api';
+import { blobGet, blobPut } from '../lib/db';
 import type { ChatMessage, MessageDoc } from '../types';
 
 // Медиа-флоу:
@@ -104,9 +105,22 @@ export function useMedia(
   const runOne = useCallback(
     async (m: ChatMessage) => {
       try {
+        const mime = m.mimeType ?? 'image/jpeg';
+        // Сначала локальный кэш (0 запросов, мгновенно).
+        if (m.mediaId) {
+          const hit = await blobGet(m.mediaId).catch(() => null);
+          if (hit) {
+            urlsRef.current.set(m.id, URL.createObjectURL(hit.blob));
+            photosRef.current[m.id] = { status: 'ready', url: urlsRef.current.get(m.id)! };
+            publish();
+            return;
+          }
+        }
         const cipher = await downloadCipher(m);
         const plain = await decryptBytes(keyRef.current, m.iv ?? '', cipher);
-        const blob = new Blob([plain], { type: m.mimeType ?? 'image/jpeg' });
+        const blob = new Blob([plain], { type: mime });
+        // Кладём в кэш (FIFO 2 ГБ внутри; при переполнении — мимо, только память).
+        if (m.mediaId) blobPut(m.mediaId, blob, mime).catch(() => {});
         const url = URL.createObjectURL(blob);
         urlsRef.current.set(m.id, url);
         photosRef.current[m.id] = { status: 'ready', url };
@@ -227,6 +241,8 @@ export function useMedia(
           } satisfies MessageDoc),
         );
         notifyMessage(ref.id);
+        // Своё фото — сразу в локальный кэш (перекачивать с сервера не надо).
+        blobPut(mediaId, new Blob([plain], { type: mime }), mime).catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Не удалось отправить фото');
       } finally {
