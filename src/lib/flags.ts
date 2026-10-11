@@ -1,5 +1,5 @@
-// Фиче-флаги: медиа (фото через Drive) включено, read-receipts выключены.
-// Receipts (deliveredAt/readAt) не включаем: записи внутри onSnapshot дают
-// loop "snapshot -> write -> snapshot" и flood Write/channel.
+// Фиче-флаги: медиа (фото через Drive) включено.
+// Receipts (галочки прочтения) включены через RTDB seenTs: пишет пир при рендере,
+// читаем чужое поле — свой rooms-листенер не триггерим, loop невозможен.
 export const ENABLE_MEDIA = true;
-export const ENABLE_RECEIPTS = false;
+export const ENABLE_RECEIPTS = true;

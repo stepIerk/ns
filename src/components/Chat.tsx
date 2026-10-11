@@ -3,6 +3,7 @@ import type { User } from 'firebase/auth';
 import {
   Bell,
   BellOff,
+  Check,
   CheckCheck,
   Clock,
   ImagePlus,
@@ -20,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useChat } from '../hooks/useChat';
 import { useMedia } from '../hooks/useMedia';
+import { isOnline, isTyping, lastSeenText, usePresence } from '../hooks/usePresence';
 import { useTheme } from '../lib/theme';
 import { ENABLE_MEDIA } from '../lib/flags';
 import { disablePush, enablePush, hasPushSubscription, registerSW } from '../lib/push';
@@ -56,6 +58,8 @@ function timeLabel(ts: number): string {
 }
 
 export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
+  const { presence, setTyping, markSeen } = usePresence(user.uid);
+
   const {
     visible,
     online,
@@ -69,7 +73,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     sendText,
     retryToDraft,
     notifyMessage,
-  } = useChat(user.uid, roomKey);
+  } = useChat(user.uid, roomKey, presence.seenTs ?? undefined);
 
   const media = useMedia(user.uid, roomKey, notifyMessage);
   const { theme, toggle } = useTheme();
@@ -97,6 +101,26 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
+  // Метка прочтения: max отрендеренного clientTs — только рост, только когда
+  // вкладка видима (в фоне не помечаем). ~1 RTDB-запись на пачку сообщений.
+  const maxTs = visible.length > 0 ? (visible[visible.length - 1]?.createdAtMs ?? 0) : 0;
+  const visibleRef = useRef(visible);
+  useEffect(() => {
+    visibleRef.current = visible;
+  });
+  useEffect(() => {
+    if (document.visibilityState === 'visible' && maxTs > 0) markSeen(maxTs);
+  }, [maxTs, markSeen]);
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState !== 'visible') return;
+      const list = visibleRef.current;
+      if (list.length > 0) markSeen(list[list.length - 1]?.createdAtMs ?? 0);
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [markSeen]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [visible.length]);
@@ -106,6 +130,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     const body = text.trim();
     if (!body || sending) return;
     setText('');
+    setTyping(false);
     setSending(true);
     try {
       await sendText(body);
@@ -138,6 +163,17 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
   const shownError = error ?? (ENABLE_MEDIA ? media.mediaError : null);
   const initial = (user.email?.[0] ?? '?').toUpperCase();
 
+  // Статус собеседника (своя связь важнее: без неё всё остальное неизвестно).
+  const peerOnline = isOnline(presence) && !offline;
+  const peerTyping = isTyping(presence) && !offline;
+  const peerStatus = offline
+    ? 'переподключение…'
+    : peerTyping
+      ? 'печатает…'
+      : peerOnline
+        ? 'в сети'
+        : (lastSeenText(presence) ?? 'сквозное шифрование');
+
   // Разметка ленты (разделители дней, группировка подряд своих) — чисто,
   // без мутаций в рендере: всё выводится из индекса.
   const items = useMemo(
@@ -163,9 +199,9 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         <div className="top-title">
           <strong>Личный чат</strong>
           <span className="top-sub">
-            <span className={`dot${offline ? ' off' : ''}`} />
+            <span className={`dot${peerOnline ? '' : ' off'}`} />
             <Lock size={11} />
-            {offline ? 'переподключение…' : 'сквозное шифрование'}
+            {peerStatus}
           </span>
         </div>
         <div className="top-actions">
@@ -255,9 +291,13 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
                         ) : (
                           <Clock size={12} />
                         )
-                      ) : (
-                        mine && <CheckCheck size={13} />
-                      )}
+                      ) : mine ? (
+                        m.status === 'read' ? (
+                          <CheckCheck size={13} className="tick-read" />
+                        ) : (
+                          <Check size={13} />
+                        )
+                      ) : null}
                     </div>
                   </div>
                 ) : (
@@ -286,7 +326,12 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
                     })()}
                     <div className="meta">
                       {timeLabel(m.createdAtMs)}
-                      {mine && <CheckCheck size={13} />}
+                      {mine &&
+                        (m.status === 'read' ? (
+                          <CheckCheck size={13} className="tick-read" />
+                        ) : (
+                          <Check size={13} />
+                        ))}
                     </div>
                   </div>
                 )}
@@ -294,6 +339,17 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
             </div>
           );
         })}
+        {peerTyping && (
+          <div className="msg theirs">
+            <div className="bubble typing-bubble" aria-live="polite" aria-label="Собеседник печатает">
+              <span className="typing-dots">
+                <span />
+                <span />
+                <span />
+              </span>
+            </div>
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 
@@ -326,7 +382,11 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         <input
           className="composer-input"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            const v = e.target.value;
+            setText(v);
+            setTyping(v.trim().length > 0);
+          }}
           placeholder="Сообщение"
           maxLength={4000}
         />

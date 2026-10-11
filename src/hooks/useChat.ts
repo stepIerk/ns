@@ -37,7 +37,7 @@ function tsOf(d: MessageDoc): number {
   return Date.now();
 }
 
-export function useChat(userUid: string, roomKey: CryptoKey) {
+export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pending, setPending] = useState<ChatMessage[]>([]);
   const [fromCache, setFromCache] = useState(false);
@@ -56,6 +56,11 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
   useEffect(() => {
     keyRef.current = roomKey;
   }, [roomKey]);
+  // seenTs пира для галочек: читаем через ref, чтобы не переподписывать rooms.
+  const peerSeenRef = useRef<number | null>(peerSeenTs ?? null);
+  useEffect(() => {
+    peerSeenRef.current = peerSeenTs ?? null;
+  }, [peerSeenTs]);
   const seenPushRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -90,13 +95,19 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
           const out: ChatMessage[] = [];
           for (const d of docs) {
             const v = d.data() as MessageDoc;
+            const ts = tsOf(v);
+            const mine = (v.senderId ?? '?') === userUid;
+            const seen = peerSeenRef.current;
+            // read — только свои: пир отрендерил сообщение (seenTs >= clientTs).
+            const st: ChatMessage['status'] =
+              mine && seen != null && ts <= seen ? 'read' : 'sent';
             // Медиа: photo-доки несут метадату для useMedia (открытие по тапу).
             if ((v.kind ?? 'text') !== 'text') {
               out.push({
                 id: d.id,
                 clientMessageId: v.clientMessageId ?? d.id,
                 senderId: v.senderId ?? '?',
-                createdAtMs: tsOf(v),
+                createdAtMs: ts,
                 kind: 'photo',
                 mediaId: v.mediaId,
                 driveFileId: v.driveFileId,
@@ -104,7 +115,7 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
                 size: v.size,
                 iv: v.iv,
                 text: '[фото — нажмите открыть]',
-                status: 'sent',
+                status: st,
               });
               continue;
             }
@@ -112,9 +123,9 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
               id: d.id,
               clientMessageId: v.clientMessageId ?? d.id,
               senderId: v.senderId ?? '?',
-              createdAtMs: tsOf(v),
+              createdAtMs: ts,
               kind: 'text',
-              status: 'sent',
+              status: st,
             };
             try {
               if (v.ciphertext && v.iv) base.text = await decryptText(key, v.iv, v.ciphertext);
@@ -140,6 +151,24 @@ export function useChat(userUid: string, roomKey: CryptoKey) {
     const serverIds = new Set(messages.map((m) => m.clientMessageId));
     setPending((p) => p.filter((m) => !serverIds.has(m.clientMessageId)));
   }, [messages, pending.length]);
+
+  // Дотягиваем галочки, когда seenTs пира вырос между снапшотами rooms.
+  // Чисто локальный пересчёт статусов — записей нет, loop невозможен.
+  useEffect(() => {
+    if (peerSeenTs == null) return;
+    setMessages((prev) => {
+      let changed = false;
+      const next = prev.map((m) => {
+        if (m.pending || m.senderId !== userUid || m.status === 'read') return m;
+        if (m.createdAtMs <= peerSeenTs) {
+          changed = true;
+          return { ...m, status: 'read' as const };
+        }
+        return m;
+      });
+      return changed ? next : prev;
+    });
+  }, [peerSeenTs, userUid]);
 
   const firePush = useCallback(async (messageId: string) => {
     if (seenPushRef.current.has(messageId)) return;

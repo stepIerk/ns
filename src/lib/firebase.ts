@@ -11,6 +11,7 @@ import {
   persistentLocalCache,
   type Firestore,
 } from 'firebase/firestore';
+import { getDatabase, type Database } from 'firebase/database';
 
 function readEnv(name: string): string {
   return (import.meta.env[name] as string | undefined)?.trim() ?? '';
@@ -31,6 +32,7 @@ export const isFirebaseConfigured =
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
 let db: Firestore | null = null;
+let rtdb: Database | null = null;
 let persistenceSet = false;
 
 export function getFirebase(): { app: FirebaseApp; auth: Auth; db: Firestore } | null {
@@ -63,4 +65,25 @@ export function getFirebase(): { app: FirebaseApp; auth: Auth; db: Firestore } |
     db = getFirestore(app);
   }
   return { app, auth, db };
+}
+
+/**
+ * Realtime Database для presence/typing/receipts (онлайн, печатает, seen).
+ * Нужен VITE_FIREBASE_DATABASE_URL (URL инстанса из консоли). Без него —
+ * null, presence тихо отключена, остальное работает как раньше.
+ */
+export function getRtdb(): Database | null {
+  const fb = getFirebase();
+  if (!fb) return null;
+  // Слэш в конце URL допускаем — отрезаем (getDatabase хочет чистый origin).
+  const url = readEnv('VITE_FIREBASE_DATABASE_URL').replace(/\/+$/, '');
+  if (!url) return null;
+  if (!rtdb) {
+    try {
+      rtdb = getDatabase(fb.app, url);
+    } catch {
+      return null;
+    }
+  }
+  return rtdb;
 }

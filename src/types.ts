@@ -16,8 +16,8 @@ export interface ChatMessage {
   mimeType?: string;
   size?: number;
   iv?: string;
-  // статусы v1: только локальные. delivered/read за флагом ENABLE_RECEIPTS.
-  status: 'sending' | 'sent' | 'error';
+  // статусы: только локальные. read = пир отрендерил (seenTs из RTDB presence).
+  status: 'sending' | 'sent' | 'read' | 'error';
   pending?: boolean;
   errorText?: string;
 }

@@ -39,7 +39,15 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid && isMember();
+      // Только справочник uid для presence: клиент пишет ping раз за сессию
+      // (и только при пустом кэше пира), читает 2 дока для поиска пира.
+      // Сама presence (онлайн/печатает/seen) живёт в Realtime Database —
+      // там дешевле и есть onDisconnect. Heartbeat сюда НЕ пишем.
+      // ВАЖНО: после правки опубликовать в Firebase Console → Firestore → Rules.
+      allow read: if isMember();
+      allow create, update: if request.auth != null && request.auth.uid == uid && isMember()
+        && request.resource.data.keys().hasOnly(['ping']);
+      allow delete: if false;
     }
 
     match /debug-ping/{uid} {

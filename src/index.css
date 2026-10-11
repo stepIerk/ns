@@ -278,10 +278,27 @@ button { font-family: inherit; }
   opacity: 0.65;
 }
 .meta svg { flex-shrink: 0; }
+.meta .tick-read { color: var(--ok); opacity: 1; }
 .meta button {
   background: none; border: none; padding: 0;
   color: inherit; font-size: 11px; font-weight: 700;
   cursor: pointer; text-decoration: underline;
+}
+
+/* Индикатор «печатает…» */
+.typing-bubble { display: flex; align-items: center; padding: 13px 15px; }
+.typing-dots { display: inline-flex; gap: 4px; }
+.typing-dots span {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-2);
+  animation: typing-blink 1.2s infinite;
+}
+.typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-blink {
+  0%, 60%, 100% { opacity: 0.35; transform: none; }
+  30% { opacity: 1; transform: translateY(-2px); }
 }
 
 /* ---------- Фото инлайн ---------- */
