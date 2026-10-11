@@ -188,14 +188,13 @@ button { font-family: inherit; }
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  padding-top: calc(10px + env(safe-area-inset-top));
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border);
+  margin: calc(env(safe-area-inset-top) + 8px) 12px 8px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
   position: sticky;
-  top: 0;
+  top: calc(env(safe-area-inset-top) + 8px);
   z-index: 5;
 }
 
@@ -224,8 +223,12 @@ button { font-family: inherit; }
 .top-actions { display: flex; gap: 2px; align-items: center; }
 
 .notice {
+  position: relative;
+  z-index: 1;
   display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin: 0 12px 8px;
   padding: 8px 12px;
+  border-radius: 14px;
   font-size: 13px;
   background: var(--warn-bg); color: var(--warn-text);
 }
@@ -359,29 +362,29 @@ button { font-family: inherit; }
 
 .composer {
   display: flex;
-  align-items: flex-end;
-  gap: 6px;
-  padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
-  margin-bottom: var(--kb-inset, 0px);
+  align-items: center;
+  gap: 4px;
+  margin: 8px 12px calc(10px + env(safe-area-inset-bottom) + max(0px, calc(var(--kb-inset, 0px) - env(safe-area-inset-bottom, 0px))));
+  padding: 6px 6px 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
   transition: margin-bottom 0.22s ease-out;
-  border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 
 .composer-input {
   flex: 1;
-  padding: 10px 14px;
+  min-width: 0;
+  padding: 10px 8px;
   font-size: 16px;
   font-family: inherit;
   color: var(--text);
-  background: var(--input-bg);
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   outline: none;
 }
-.composer-input:focus { border-color: var(--text-2); }
+.composer-input::placeholder { color: var(--text-2); }
 
 .send-btn {
   width: 40px; height: 40px;
@@ -441,10 +444,12 @@ button { font-family: inherit; }
 
 /* ---------- Матовое стекло ---------- */
 
-.topbar,
 .composer {
   position: relative;
-  background: color-mix(in srgb, var(--bg) 45%, transparent);
+}
+.topbar,
+.composer {
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
   backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
 }
@@ -454,6 +459,7 @@ button { font-family: inherit; }
   content: '';
   position: absolute;
   inset: 0;
+  border-radius: inherit;
   pointer-events: none;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 42%);
 }
@@ -464,7 +470,7 @@ button { font-family: inherit; }
 
 /* Стеклянные пузыри (опция в настройках, цвет задаётся --glass-mine/theirs) */
 .mine .bubble.glass {
-  background: color-mix(in srgb, var(--glass-mine, var(--bubble-mine)) 45%, transparent);
+  background: color-mix(in srgb, var(--glass-mine, var(--bubble-mine)) 60%, transparent);
   backdrop-filter: blur(var(--glass-bubble-blur)) saturate(1.3);
   -webkit-backdrop-filter: blur(var(--glass-bubble-blur)) saturate(1.3);
   border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
@@ -472,7 +478,7 @@ button { font-family: inherit; }
   color: var(--bubble-mine-text);
 }
 .theirs .bubble.glass {
-  background: color-mix(in srgb, var(--glass-theirs, var(--bubble-theirs)) 45%, transparent);
+  background: color-mix(in srgb, var(--glass-theirs, var(--bubble-theirs)) 60%, transparent);
   backdrop-filter: blur(var(--glass-bubble-blur)) saturate(1.3);
   -webkit-backdrop-filter: blur(var(--glass-bubble-blur)) saturate(1.3);
   border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
