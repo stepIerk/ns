@@ -513,7 +513,12 @@ button { font-family: inherit; }
 .chat { position: relative; }
 .wallpaper-layer {
   position: absolute;
-  inset: 0;
+  /* С запасом за safe-area: накрываем и зону под Dynamic Island, */
+  /* даже если бокс чата где-то окажется вдавлен */
+  top: calc(-1 * env(safe-area-inset-top, 0px));
+  bottom: calc(-1 * env(safe-area-inset-bottom, 0px));
+  left: 0;
+  right: 0;
   z-index: 0;
   background-size: cover;
   background-position: center;
