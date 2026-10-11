@@ -256,8 +256,8 @@ button { font-family: inherit; }
   overflow-y: auto;
   overscroll-behavior: contain;
   scroll-padding-top: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 12px);
-  scroll-padding-bottom: calc(var(--bar-bottom, 64px) + 24px + var(--kb-inset, 0px));
-  padding: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 8px) 12px calc(var(--bar-bottom, 64px) + 18px);
+  scroll-padding-bottom: calc(var(--bar-bottom, 64px) + px + var(--kb-inset, 0px));
+  padding: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 8px) 12px calc(var(--bar-bottom, 64px) + 35px);
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -872,7 +872,7 @@ input[type='color'].colorwell {
   gap: 8px;
   min-width: 0;
   background: var(--surface-2);
-  border-radius: 14px;
+  border-radius: 20px;
   padding: 6px 6px 6px 10px;
   margin-bottom: 3px;
 }
