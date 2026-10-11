@@ -341,6 +341,13 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
           </div>
           <div className="small">api={apiBase}</div>
           {cacheInfo && <div className="small">{cacheInfo}</div>}
+          <div className="small">
+            {'serviceWorker' in navigator
+              ? navigator.serviceWorker.controller
+                ? 'sw: active (офлайн-шелл готов)'
+                : 'sw: нет контроля (открой онлайн и перезапусти)'
+              : 'sw: не поддерживается'}
+          </div>
           {pushStatus && <div className="small">{pushStatus}</div>}
           {snapError && <div className="small">snap err: {snapError}</div>}
           <div className="small muted">

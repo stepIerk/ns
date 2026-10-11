@@ -1,5 +1,14 @@
-/* ns-messenger SW v2. Меняй версию при правках, иначе iOS залипнет на старом SW. */
-const SW_VERSION = 'v2';
+/* ns-messenger SW v3. Меняй версию при правках, иначе iOS залипнет на старом SW. */
+const SW_VERSION = 'v3';
+
+/* Прекэш app shell (index.html, JS, CSS, иконки): собирается на билде
+ * через vite-plugin-pwa (injectManifest подставляет __WB_MANIFEST).
+ * Только статика из сборки — запросы данных (Firestore/RTDB/API) не
+ * перехватываются и всегда идут в сеть, офлайн-данные лежат в IDB. */
+import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching';
+cleanupOutdatedCaches();
+precacheAndRoute(self.__WB_MANIFEST);
+
 self.addEventListener('install', () => {
   self.skipWaiting();
 });
