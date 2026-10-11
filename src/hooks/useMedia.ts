@@ -22,6 +22,9 @@ const UPLOAD_CHUNK = 1024 * 1024;
 const WRITE_TIMEOUT_MS = 30000;
 // Параллельных скачиваний: бережём лимит конкурентных вызовов функции.
 const MAX_PARALLEL_DOWNLOADS = 4;
+// Чуть ниже execution-timeout функции (30с): живая, но медленная функция
+// успеет ответить 504 с диагнозом; срабатывает только на true-зависаниях.
+const MEDIA_TIMEOUT_MS = 25000;
 
 export type PhotoState = { status: 'loading' } | { status: 'ready'; url: string } | { status: 'error' };
 
@@ -47,11 +50,15 @@ async function downloadCipher(m: ChatMessage): Promise<ArrayBuffer> {
   let received = 0;
   for (let start = 0; start < total; start += DOWNLOAD_CHUNK) {
     const end = Math.min(start + DOWNLOAD_CHUNK - 1, total - 1);
-    const { data } = await authedPost<{ data: string; total: number }>('/api/media/download', {
-      driveFileId: m.driveFileId,
-      start,
-      end,
-    });
+    const { data } = await authedPost<{ data: string; total: number }>(
+      '/api/media/download',
+      {
+        driveFileId: m.driveFileId,
+        start,
+        end,
+      },
+      { timeoutMs: MEDIA_TIMEOUT_MS },
+    );
     const chunk = b64ToBytes(data);
     parts.push(chunk);
     received += chunk.length;
@@ -199,6 +206,7 @@ export function useMedia(
         const { sessionUrl } = await authedPost<{ sessionUrl: string }>(
           '/api/media/upload-init',
           { mediaId, mimeType: mime, size: cipher.byteLength },
+          { timeoutMs: MEDIA_TIMEOUT_MS },
         );
         // Заливка шифротекста чанками через сервер (лимит запроса к функции 3.5МБ,
         // чанк 1МБ → ~1.37МБ base64 + JSON — с запасом). Сервер доливает чанки
@@ -211,6 +219,7 @@ export function useMedia(
           const r = await authedPost<{ done: boolean; fileId?: string }>(
             '/api/media/upload-chunk',
             { sessionUrl, start, end, total, data: bufToB64(bytes.slice(start, end + 1)) },
+            { timeoutMs: MEDIA_TIMEOUT_MS },
           );
           if (r.done) driveFileId = r.fileId ?? '';
         }
@@ -285,6 +294,7 @@ export function useMedia(
         const { sessionUrl } = await authedPost<{ sessionUrl: string }>(
           '/api/media/upload-init',
           { mediaId, mimeType: mime, size: cipher.byteLength },
+          { timeoutMs: MEDIA_TIMEOUT_MS },
         );
         const bytes = new Uint8Array(cipher);
         const total = bytes.byteLength;
@@ -294,6 +304,7 @@ export function useMedia(
           const r = await authedPost<{ done: boolean; fileId?: string }>(
             '/api/media/upload-chunk',
             { sessionUrl, start, end, total, data: bufToB64(bytes.slice(start, end + 1)) },
+            { timeoutMs: MEDIA_TIMEOUT_MS },
           );
           if (r.done) driveFileId = r.fileId ?? '';
         }

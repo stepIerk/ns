@@ -24,6 +24,8 @@ export interface StoredMsg {
   // voice (schemaless — миграции не надо)
   durationMs?: number;
   waveform?: number[];
+  // spark-салют (schemaless — миграции не надо)
+  spark?: boolean;
   // Ответ: ссылка на родителя (значения schemaless — миграции не надо).
   replyToId?: string;
   replyToSenderId?: string;
@@ -240,7 +242,6 @@ export async function msgById(id: string): Promise<StoredMsg | null> {
   );
   return (v as StoredMsg | undefined) ?? null;
 }
-
 // ---------- Реакции (кэш зеркала RTDB) ----------
 
 export async function reactGet(msgId: string): Promise<StoredReactions | null> {
@@ -257,6 +258,25 @@ export async function reactPut(msgId: string, map: StoredReactions): Promise<voi
   await tx(db, [REACT_STORE], 'readwrite', (t) => {
     if (Object.keys(map).length === 0) t.objectStore(REACT_STORE).delete(msgId);
     else t.objectStore(REACT_STORE).put(map, msgId);
+  });
+}
+
+// ---------- Spark: флаг первого просмотра (только фронт, только spark) ----------
+// Живёт в META_STORE базы сообщений (`sparkSeen:{msgId}`), версий не бампим.
+// Вызывающий код ловит ошибки сам (IDB best-effort).
+
+export async function sparkWasSeen(msgId: string): Promise<boolean> {
+  const db = await getMsgDb();
+  const v = await tx(db, [META_STORE], 'readonly', (t) =>
+    req(t.objectStore(META_STORE).get(`sparkSeen:${msgId}`)),
+  );
+  return v === 1;
+}
+
+export async function sparkMarkSeen(msgId: string): Promise<void> {
+  const db = await getMsgDb();
+  await tx(db, [META_STORE], 'readwrite', (t) => {
+    t.objectStore(META_STORE).put(1, `sparkSeen:${msgId}`);
   });
 }
 /** FIFO: режем старейшие, пока count <= cap. Возвращает сколько удалили. */

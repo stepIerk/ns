@@ -65,6 +65,7 @@ function docToRecord(id: string, v: MessageDoc): StoredMsg {
     size: v.size,
     durationMs: v.durationMs,
     waveform: v.waveform,
+    spark: v.spark,
     replyToId: v.replyToId,
     replyToSenderId: v.replyToSenderId,
     replyToClientId: v.replyToClientId,
@@ -107,6 +108,7 @@ async function recordsToChat(
         iv: r.iv,
         durationMs: r.durationMs,
         waveform: r.waveform,
+        spark: r.spark,
         text: isVoice ? undefined : '[фото — нажмите открыть]',
         status: st,
         replyTo: recordReplyTo(r),
@@ -121,6 +123,7 @@ async function recordsToChat(
       kind: 'text',
       status: st,
       replyTo: recordReplyTo(r),
+      spark: r.spark,
     };
     try {
       if (r.ciphertext && r.iv) base.text = await decryptText(key, r.iv, r.ciphertext);
@@ -338,12 +341,13 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
   }, []);
 
   const sendText = useCallback(
-    async (body: string, opts?: { replyTo?: ReplyTarget }): Promise<void> => {
+    async (body: string, opts?: { replyTo?: ReplyTarget; spark?: boolean }): Promise<void> => {
       const text = body.trim();
       if (!text) return;
       setError(null);
       const clientMessageId = crypto.randomUUID();
       const replyTo = opts?.replyTo;
+      const spark = opts?.spark === true;
       const optimistic: ChatMessage = {
         id: `local-${clientMessageId}`,
         clientMessageId,
@@ -354,6 +358,7 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
         status: 'sending',
         pending: true,
         replyTo,
+        ...(spark ? { spark: true as const } : null),
       };
       setPending((p) => [...p, optimistic]);
       try {
@@ -369,6 +374,7 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
             kind: 'text',
             ciphertext: ctB64,
             iv: ivB64,
+            ...(spark ? { spark: true as const } : null),
             ...(replyTo
               ? {
                   replyToId: replyTo.id,

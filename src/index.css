@@ -530,7 +530,8 @@ button { font-family: inherit; }
   pointer-events: none;
 }
 .composer {
-  z-index: 5;
+  /* Поверх салюта (60): нижний бар всегда доступен и не перекрывается. */
+  z-index: 70;
 }
 
 /* ---------- Аватар собеседника ---------- */
@@ -747,6 +748,21 @@ input[type='color'].colorwell {
 .swipe-shift.snap { transition: transform 0.25s ease-out; }
 /* Ширину ограничивает .swipe-wrap — пузырь внутри на всю ширину сдвига. */
 .swipe-shift .bubble { max-width: none; }
+
+/* Big emoji (только смайлы): без рамки пузыря, крупнее обычного текста.
+   Специфичность выше .mine/.theirs .bubble — иначе их фон/граница пробьются. */
+.msg.mine .bubble-nobg,
+.msg.theirs .bubble-nobg {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 2px 6px;
+  /* Текст (время/галочки/цитата) наследует цвет залитого пузыря —
+     на прозрачном фоне он сливается, берём цвет темы. */
+  color: var(--text);
+}
+.emoji-huge { font-size: 54px; line-height: 1.25; }
+.emoji-mid { font-size: 32px; line-height: 1.3; }
 
 /* Цитата внутри пузыря (тап — прыжок к родителю). */
 .quote {
@@ -1088,4 +1104,101 @@ input[type='color'].colorwell {
   flex-shrink: 0;
   min-width: 30px;
   text-align: right;
+}
+
+/* ---------- Spark Emoji: пикер и салют ---------- */
+
+/* Панель сердечка вместо поля ввода (тап по эмодзи = мгновенная отправка). */
+.spark-panel {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  background: var(--surface-2);
+  border-radius: 16px;
+  padding: 8px 6px;
+  margin-bottom: 3px;
+}
+.spark-item {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 30px;
+  line-height: 1.2;
+  padding: 4px 6px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 0.12s;
+}
+.spark-item:active { transform: scale(1.3); }
+.spark-panel .icon-btn { flex-shrink: 0; margin-left: auto; }
+
+/* Салют на весь экран: затемнение + центральный пульс + рой частиц. */
+.spark-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--overlay) 55%, transparent);
+  animation: spark-overlay-life 2.8s ease-out forwards;
+  cursor: pointer;
+}
+@keyframes spark-overlay-life {
+  0% { opacity: 0; }
+  8% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.spark-p {
+  position: absolute;
+  bottom: -100px;
+  transform: translateX(-50%);
+  animation-timing-function: ease-out;
+  /* both: во время delay частица уже в кадре 0% (у сердец — за экраном,
+     невидима), а не лежит видимой у нижнего края. */
+  animation-fill-mode: both;
+  pointer-events: none;
+}
+.sp-rise { animation-name: sp-rise; animation-timing-function: linear; }
+@keyframes sp-rise {
+  /* Поток: влетают из-за нижнего края уже в движении, уходят за верхний.
+     Без opacity-анимации — просто летят вверх с постоянной скоростью. */
+  0% { transform: translate(-50%, 25vh) rotate(0deg) scale(1); opacity: 1; }
+  100% { transform: translate(calc(-50% + var(--dx, 0px)), -120vh) rotate(var(--rot, 0deg)) scale(1); opacity: 1; }
+}
+/* Поцелуи: большие вспыхивают по всему экрану с задержками. */
+.sp-pop { bottom: auto; animation-name: sp-pop; }
+@keyframes sp-pop {
+  0% { transform: translate(-50%, -50%) scale(0) rotate(0deg); opacity: 0; }
+  20% { transform: translate(-50%, -50%) scale(1.15) rotate(var(--rot, 0deg)); opacity: 1; }
+  35% { transform: translate(-50%, -50%) scale(1) rotate(var(--rot, 0deg)); opacity: 1; }
+  75% { transform: translate(-50%, -50%) scale(1) rotate(var(--rot, 0deg)); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1.3) rotate(var(--rot, 0deg)); opacity: 0; }
+}
+.sp-fall-sway, .sp-fall-fast { bottom: auto; top: -60px; }
+.sp-fall-sway { animation-name: sp-fall-sway; }
+@keyframes sp-fall-sway {
+  0% { transform: translate(-50%, 0) rotate(0deg); opacity: 0; }
+  12% { opacity: 1; }
+  50% { transform: translate(calc(-50% + var(--dx, 0px)), 55vh) rotate(calc(var(--rot, 0deg) / 2)); opacity: 1; }
+  100% { transform: translate(calc(-50% - var(--dx, 0px)), 112vh) rotate(var(--rot, 0deg)); opacity: 0; }
+}
+.sp-fall-fast { animation-name: sp-fall-fast; animation-timing-function: linear; }
+@keyframes sp-fall-fast {
+  0% { transform: translate(-50%, 0); opacity: 0; }
+  10% { opacity: 1; }
+  100% { transform: translate(calc(-50% + var(--dx, 0px)), 115vh); opacity: 0.2; }
+}
+
+/* Маркер spark-пузыря: мягкая пульсация (тап — реплей салюта). */
+.spark-glow { animation: spark-glow-pulse 2.4s ease-in-out infinite; }
+@keyframes spark-glow-pulse {
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(229, 72, 77, 0)); }
+  50% { filter: drop-shadow(0 0 14px rgba(229, 72, 77, 0.55)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spark-p { display: none; }
+  .spark-glow { animation: none; }
 }

@@ -29,6 +29,9 @@ export interface ChatMessage {
   // Ответ (цитата): только ссылка на родителя, сниппет резолвится локально
   // по id (затем по clientMessageId — покрывает pending-родителя после эха).
   replyTo?: ReplyTarget;
+  // spark: сообщение-салют (эмодзи из spark-пикера). Флаг plaintext,
+  // анимация — только фронт (первый просмотр получателя, флаг в IDB).
+  spark?: boolean;
   // статусы: только локальные. read = пир отрендерил (seenTs из RTDB presence).
   status: 'sending' | 'sent' | 'read' | 'error';
   pending?: boolean;
@@ -55,6 +58,8 @@ export interface MessageDoc {
   replyToId?: string;
   replyToSenderId?: string;
   replyToClientId?: string;
+  // spark-салют (только true; см. ChatMessage.spark)
+  spark?: boolean;
   // receipts за флагом ENABLE_RECEIPTS (v1 не пишем/не читаем)
   deliveredAt?: unknown;
   readAt?: unknown;

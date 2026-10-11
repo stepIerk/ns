@@ -19,6 +19,7 @@ import {
 } from '../hooks/useReactions';
 import { decryptText } from '../lib/crypto';
 import { msgById } from '../lib/db';
+import { bigEmojiKind } from '../lib/emoji';
 import { VOICE_BARS, formatVoiceTime } from '../lib/voice';
 import { getActiveVoiceId, setActiveVoiceId, subscribeVoiceBus } from '../lib/voiceBus';
 import type { ChatMessage, ReplyTarget } from '../types';
@@ -378,6 +379,7 @@ export interface MessageBubbleProps {
   onCloseMenu: () => void;
   onReply: (m: ChatMessage) => void;
   onJump: (t: ReplyTarget) => void;
+  onSparkReplay: (m: ChatMessage) => void;
   onErrorTap: (m: ChatMessage) => void;
   onRetryPhoto: (m: ChatMessage) => void;
   onOpenViewer: (id: string) => void;
@@ -404,6 +406,7 @@ export default function MessageBubble(props: MessageBubbleProps) {
     onCloseMenu,
     onReply,
     onJump,
+    onSparkReplay,
     onErrorTap,
     onRetryPhoto,
     onOpenViewer,
@@ -447,8 +450,9 @@ export default function MessageBubble(props: MessageBubbleProps) {
     suppressClickRef.current = false;
     gestureRef.current = { x: e.clientX, y: e.clientY, lock: null };
     setSnapping(false);
-    // Лонг-пресс — только фото (у текста меню по тапу, картинка занята viewer'ом).
-    if (m.kind === 'photo' && !m.pending) {
+    // Лонг-пресс — фото (тап занят viewer'ом) и spark (тап занят реплеем салюта).
+    // У обычного текста/голосового меню по тапу.
+    if ((m.kind === 'photo' || (m.kind === 'text' && m.spark === true)) && !m.pending) {
       longPressRef.current = setTimeout(() => {
         longPressRef.current = null;
         gestureRef.current = null;
@@ -501,8 +505,8 @@ export default function MessageBubble(props: MessageBubbleProps) {
     setOffset(0);
   };
 
-  // Тап: текст и голосовое — меню, дабл-тап — быстрый ❤️. Тапы по картинке
-  // и кнопкам плеера не доходят (stopPropagation), лонг-пресс фото — меню.
+  // Тап: текст и голосовое — меню, spark — реплей салюта (меню лонг-прессом),
+  // дабл-тап везде — быстрый ❤️. Тапы по картинке и кнопкам плеера не доходят.
   const onBubbleClick = () => {
     if (suppressClickRef.current) {
       suppressClickRef.current = false;
@@ -519,6 +523,14 @@ export default function MessageBubble(props: MessageBubbleProps) {
       return;
     }
     lastTapRef.current = now;
+    // Spark: тап — локальный реплей салюта (меню — лонг-прессом).
+    if (m.kind === 'text' && m.spark === true) {
+      if (m.text) {
+        onCloseMenu();
+        onSparkReplay(m);
+      }
+      return;
+    }
     // Меню: текст и голосовое — по тапу; фото — лонг-прессом (тап занят viewer'ом).
     if (m.kind === 'text' || m.kind === 'voice') onOpenMenu(measureFlip());
   };
@@ -563,9 +575,15 @@ export default function MessageBubble(props: MessageBubbleProps) {
     </div>
   );
 
+  // Big emoji: только смайлы — без рамки пузыря (стекло тоже снимаем,
+  // иначе color-mix вернёт фон). Цитата/реакции/свайпы работают как обычно.
+  const bigKind = m.kind === 'text' && !m.decryptError ? bigEmojiKind(m.text) : null;
+
   const contentNode =
     m.kind === 'text' ? (
-      <div className={`bubble${glass ? ' glass' : ''}`}>
+      <div
+        className={`bubble${glass && !bigKind ? ' glass' : ''}${bigKind ? ` bubble-nobg ${bigKind === 'huge' ? 'emoji-huge' : 'emoji-mid'}` : ''}${m.spark === true ? ' spark-glow' : ''}`}
+      >
         {m.replyTo && (
           <ReplyQuote
             replyTo={m.replyTo}

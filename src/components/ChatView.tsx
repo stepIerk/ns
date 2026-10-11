@@ -11,6 +11,7 @@ import {
   ArrowUp,
   ChevronUp,
   EllipsisVertical,
+  Heart,
   Loader2,
   Lock,
   Mic,
@@ -24,7 +25,9 @@ import {
 import type { PhotoState } from '../hooks/useMedia';
 import type { ReactionMap } from '../hooks/useReactions';
 import { useVoiceRecorder, type VoiceTake } from '../hooks/useVoiceRecorder';
+import { sparkMarkSeen, sparkWasSeen } from '../lib/db';
 import type { LocalSettings } from '../lib/settings';
+import { SPARK_SET, effectFor, type SparkEffect } from '../lib/spark';
 import {
   CANCEL_DX,
   HOLD_TO_RECORD_MS,
@@ -35,6 +38,7 @@ import {
 } from '../lib/voice';
 import MessageBubble from './MessageBubble';
 import SettingsSheet from './SettingsSheet';
+import SparkOverlay from './SparkOverlay';
 import type { ChatMessage, ReplyTarget } from '../types';
 
 /** Презентационный чат: те же компоненты и стили, данные — пропсами.
@@ -66,7 +70,7 @@ export interface ChatViewProps {
   onPickWallpaper: (f: File) => void;
   onClearWallpaper: () => void;
   // Действия
-  onSubmitText: (text: string, opts?: { replyTo?: ReplyTarget }) => Promise<void>;
+  onSubmitText: (text: string, opts?: { replyTo?: ReplyTarget; spark?: boolean }) => Promise<void>;
   onPickFile: (f: File, opts?: { replyTo?: ReplyTarget }) => void;
   onSendVoice: (
     blob: Blob,
@@ -96,6 +100,8 @@ export interface ChatViewProps {
   roomKey?: CryptoKey;
   seedReactions?: Record<string, ReactionMap>;
   reactionsLocalOnly?: boolean;
+  // Spark: в превью автосалют гасим (реплей по тапу работает).
+  disableSparkAuto?: boolean;
 }
 
 function isStandalone(): boolean {
@@ -163,6 +169,7 @@ export default function ChatView(p: ChatViewProps) {
     roomKey,
     seedReactions,
     reactionsLocalOnly,
+    disableSparkAuto,
   } = p;
 
   const [text, setText] = useState('');
@@ -190,6 +197,17 @@ export default function ChatView(p: ChatViewProps) {
       setToast(null);
     }, 2200);
   }, []);
+  // ---------- Spark Emoji: салюты ----------
+  // Панель сердечка вместо ввода; тап по эмодзи = мгновенная отправка spark.
+  // Автосалют — только получателю при первом просмотре (флаг в IDB),
+  // очередь играет по одному; тап по spark-пузырю — локальный реплей.
+  const [sparkOpen, setSparkOpen] = useState(false);
+  const [sparkQueue, setSparkQueue] = useState<{ key: number; emoji: string; effect: SparkEffect }[]>([]);
+  const sparkQueuedRef = useRef<Set<string>>(new Set());
+  const sparkKeyRef = useRef(1);
+  // Голова очереди играет; конец показа = pop. Отдельного active-стейта нет,
+  // чтобы не дёргать setState синхронно в эффекте (хук-линт).
+  const sparkHead = sparkQueue[0] ?? null;
   // ---------- Голосовые: запись (стиль Telegram) ----------
   // Тап по кнопке — смена mic/cam; холд mic — запись; слайд вверх — lock,
   // слайд влево — отмена. Отпустил в holding — отправка; в locked пишем дальше.
@@ -251,6 +269,8 @@ export default function ChatView(p: ChatViewProps) {
   const onRecDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     // Клавиатуру не трогаем (иначе схлопнется); pointer-события идут как шли.
     e.preventDefault();
+    // Запись вместо панели spark (кнопка сердца скрыта, состояние сбрасываем).
+    setSparkOpen(false);
     if (photoBusy || busy) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     // В locked игнорим кнопку (там свои trash/send), иначе тап сменит режим.
@@ -525,18 +545,19 @@ export default function ChatView(p: ChatViewProps) {
     }
   }, [visible.length]);
 
-  // Escape закрывает шторку и меню реакций.
+  // Escape закрывает шторку, меню реакций и spark-панель.
   useEffect(() => {
-    if (!sheetOpen && !menuFor) return;
+    if (!sheetOpen && !menuFor && !sparkOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setSheetOpen(false);
         setMenuFor(null);
+        setSparkOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [sheetOpen, menuFor]);
+  }, [sheetOpen, menuFor, sparkOpen]);
 
   const onSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -679,6 +700,102 @@ export default function ChatView(p: ChatViewProps) {
     [notify],
   );
 
+  // ---------- Spark: отправка, очередь, первый просмотр ----------
+
+  // Мгновенная отправка spark-тапом из пикера (как стикер).
+  const sendSpark = useCallback(
+    async (emoji: string) => {
+      if (busy) return;
+      setSparkOpen(false);
+      setTypingActive(false);
+      try {
+        await onSubmitText(emoji, { spark: true });
+      } catch {
+        // Ошибка уже показана через error/phоtoBusy-индикаторы выше.
+      }
+    },
+    [busy, onSubmitText, setTypingActive],
+  );
+
+  // Реплей салюта тапом по spark-пузырю (локально, у кого угодно).
+  const replaySpark = useCallback((m: ChatMessage) => {
+    if (!m.text) return;
+    setSparkQueue((q) => [...q, { key: sparkKeyRef.current++, emoji: m.text ?? '', effect: effectFor(m.text) }]);
+  }, []);
+
+  // Автосалют получателю: spark от пира, флага в IDB нет, вкладка на глазах.
+  // Отправителю — никогда. Офлайн-приход догонит снапшотом и салютует при виде.
+  useEffect(() => {
+    if (disableSparkAuto) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    let alive = true;
+    void (async () => {
+      const fresh: { key: number; emoji: string; effect: SparkEffect }[] = [];
+      for (const m of visible) {
+        if (!m.spark || m.senderId === meUid || m.pending || !m.text) continue;
+        if (sparkQueuedRef.current.has(m.id)) continue;
+        let seen = false;
+        try {
+          seen = await sparkWasSeen(m.id);
+        } catch {
+          // IDB недоступен — считаем не виденным, сессионный дедуп через queuedRef.
+        }
+        if (!alive) return;
+        if (seen) {
+          sparkQueuedRef.current.add(m.id);
+          continue;
+        }
+        try {
+          await sparkMarkSeen(m.id);
+        } catch {
+          // IDB недоступен — салютуем разово за сессию через queuedRef.
+        }
+        sparkQueuedRef.current.add(m.id);
+        fresh.push({ key: sparkKeyRef.current++, emoji: m.text ?? '', effect: effectFor(m.text) });
+      }
+      if (alive && fresh.length > 0) setSparkQueue((q) => [...q, ...fresh]);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [visible, meUid, disableSparkAuto]);
+
+  // Вернулся в приложение — рескан: могли прийти spark в фоне.
+  // visible берём из ref (иначе замыкание протухнет).
+  useEffect(() => {
+    if (disableSparkAuto) return;
+    const onVis = () => {
+      if (document.visibilityState !== 'visible') return;
+      void (async () => {
+        const fresh: { key: number; emoji: string; effect: SparkEffect }[] = [];
+        for (const m of visibleRef.current) {
+          if (!m.spark || m.senderId === meUid || m.pending || !m.text) continue;
+          if (sparkQueuedRef.current.has(m.id)) continue;
+          let seen = true;
+          try {
+            seen = await sparkWasSeen(m.id);
+          } catch {
+            // В фоне без IDB не гадаем — тишина лучше повтора.
+          }
+          if (!seen) {
+            try {
+              await sparkMarkSeen(m.id);
+            } catch {
+              // ignore
+            }
+            sparkQueuedRef.current.add(m.id);
+            fresh.push({ key: sparkKeyRef.current++, emoji: m.text ?? '', effect: effectFor(m.text) });
+          } else {
+            sparkQueuedRef.current.add(m.id);
+          }
+        }
+        if (fresh.length > 0) setSparkQueue((q) => [...q, ...fresh]);
+      })();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [disableSparkAuto, meUid]);
+
   // Меню закрывается скроллом ленты и кликом мимо поповера (без бэкдропа,
   // чтобы не блокировать ленту; клики внутри поповера — stopPropagation).
   useEffect(() => {
@@ -777,6 +894,7 @@ export default function ChatView(p: ChatViewProps) {
                 onCloseMenu={() => setMenuFor((cur) => (cur?.id === m.id ? null : cur))}
                 onReply={handleReply}
                 onJump={(t) => void jumpTo(t)}
+                onSparkReplay={replaySpark}
                 onErrorTap={(msg) => {
                   const draft = onRestoreDraft(msg.clientMessageId);
                   if (draft) setText(draft);
@@ -854,6 +972,21 @@ export default function ChatView(p: ChatViewProps) {
             {photoBusy ? <Loader2 size={20} className="spin" /> : <Plus size={20} />}
           </button>
         )}
+        {!recording && (
+          <button
+            type="button"
+            className={`icon-btn${sparkOpen ? ' active' : ''}`}
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => {
+              setSparkOpen((v) => !v);
+              setMenuFor(null);
+            }}
+            title="Spark — салют"
+            aria-label="Spark — салют"
+          >
+            <Heart size={20} />
+          </button>
+        )}
         {recording ? (
           <div className="rec-ui">
             <button
@@ -890,6 +1023,31 @@ export default function ChatView(p: ChatViewProps) {
                 <ChevronUp size={15} />
               </span>
             )}
+          </div>
+        ) : sparkOpen ? (
+          <div className="spark-panel" role="dialog" aria-label="Spark — выбери салют">
+            {SPARK_SET.map((s) => (
+              <button
+                key={s.emoji}
+                type="button"
+                className="spark-item"
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => void sendSpark(s.emoji)}
+                aria-label={`Отправить ${s.emoji}`}
+              >
+                {s.emoji}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="icon-btn"
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => setSparkOpen(false)}
+              title="Закрыть"
+              aria-label="Закрыть"
+            >
+              <X size={15} />
+            </button>
           </div>
         ) : (
           <textarea
@@ -946,6 +1104,16 @@ export default function ChatView(p: ChatViewProps) {
         <div className="toast" role="status">
           {toast}
         </div>
+      )}
+
+      {sparkHead && (
+        <SparkOverlay
+          key={sparkHead.key}
+          emoji={sparkHead.emoji}
+          effect={sparkHead.effect}
+          seed={sparkHead.key}
+          onDone={() => setSparkQueue((q) => q.slice(1))}
+        />
       )}
 
       {viewer && (

@@ -138,6 +138,25 @@ function buildPool(): {
   };
   link(163, 160);
   link(150, null);
+  // Big emoji: одиночный и пачка (только смайлы — без рамки пузыря).
+  const big1 = messages[162];
+  if (big1 && big1.kind === 'text') {
+    big1.text = '❤️';
+    big1.spark = true;
+  }
+  const bigMany = messages[158];
+  if (bigMany && bigMany.kind === 'text') bigMany.text = '👍🔥🎉😮';
+  // Spark-демо: чужой 😭 и свой 🥳 (автосалют в превью гашен, реплей по тапу).
+  const spPeer = messages[159];
+  if (spPeer && spPeer.kind === 'text') {
+    spPeer.text = '😭';
+    spPeer.spark = true;
+  }
+  const spMine = messages[161];
+  if (spMine && spMine.kind === 'text') {
+    spMine.text = '🥳';
+    spMine.spark = true;
+  }
   const photoIdx = messages.findIndex((m, i) => m.kind === 'photo' && i > 150);
   if (photoIdx > 2) link(photoIdx, photoIdx - 2);
   const seeds: Record<string, ReactionMap> = {};
@@ -191,7 +210,7 @@ export default function Preview() {
     return older.length;
   };
 
-  const submitText = async (body: string): Promise<void> => {
+  const submitText = async (body: string, opts?: { spark?: boolean }): Promise<void> => {
     const id = `pv-local-${Date.now()}`;
     setExtra((prev) => [
       ...prev,
@@ -203,6 +222,7 @@ export default function Preview() {
         kind: 'text',
         text: body,
         status: 'sent',
+        ...(opts?.spark ? { spark: true as const } : null),
       },
     ]);
   };
@@ -364,6 +384,7 @@ export default function Preview() {
         debugLines={['preview: /test · 170 сообщений в пуле', 'настройки — общие с боевым (localStorage)']}
         seedReactions={pool.seeds}
         reactionsLocalOnly
+        disableSparkAuto
       />
     </>
   );

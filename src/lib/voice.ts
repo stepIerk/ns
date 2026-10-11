@@ -52,7 +52,14 @@ export async function computeVoiceWave(
     if (!AC) return { waveform: flat(), durationMs: 0 };
     const ctx = new AC();
     try {
-      const audio = await ctx.decodeAudioData(buf.slice(0));
+      // Safari/WebKit иногда не резолвит decodeAudioData вообще (висящий
+      // промис) — не даём ему подвесить отправку: фолбэк с ровной волной,
+      // длительность возьмётся из времени записи.
+      const decoder = ctx.decodeAudioData(buf.slice(0));
+      const guard = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('decode timeout')), 15000);
+      });
+      const audio = await Promise.race([decoder, guard]);
       const ch = audio.getChannelData(0);
       if (ch.length === 0) return { waveform: flat(), durationMs: 0 };
       const per = Math.max(1, Math.floor(ch.length / bars));
