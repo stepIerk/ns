@@ -212,8 +212,13 @@ export default function ChatView(p: ChatViewProps) {
     if (!vv) return;
     const root = document.documentElement;
     const sync = () => {
-      const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      root.style.setProperty('--kb-inset', `${Math.round(inset)}px`);
+      // visualViewport сжимается и от тулбара Safari, а не только от клавиатуры.
+      // Тулбар — системный хром (его не убрать), но бар поднимаем только когда
+      // реально сфокусировано поле ввода, иначе тулбар ошибочно «поднимал» композер.
+      const el = document.activeElement;
+      const typing = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+      const raw = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      root.style.setProperty('--kb-inset', `${typing ? Math.round(raw) : 0}px`);
     };
     sync();
     vv.addEventListener('resize', sync);
