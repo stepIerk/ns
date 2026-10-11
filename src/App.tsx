@@ -6,8 +6,9 @@ import { isFirebaseConfigured } from './lib/firebase';
 import { exportRoomKeyToString } from './lib/crypto';
 import { clearRoomKey, loadRoomKey } from './lib/keystore';
 import { disablePush } from './lib/push';
-import { applyTheme, initialTheme } from './lib/theme';
+import { useApplyTheme } from './lib/theme';
 import { ensurePersist } from './lib/db';
+import { useLocalSettings } from './lib/settings';
 import Login from './components/Login';
 import PairingGate from './components/PairingGate';
 import Chat from './components/Chat';
@@ -18,9 +19,21 @@ function Shell() {
   const [showKey, setShowKey] = useState(false);
   const [keyString, setKeyString] = useState('');
 
-  // Тема нужна и на экранах входа/спаривания (в чате — тоггл через useTheme).
+  // Локальные настройки устройства (имя/вид собеседника, тема, пузыри, обои).
+  // Единственный источник — здесь; Chat получает через пропсы.
+  const { settings, update: updateSettings } = useLocalSettings();
+  useApplyTheme(settings.theme);
+  const resetAppearance = () => {
+    updateSettings({
+      theme: 'system',
+      bubbleGlassMine: false,
+      bubbleGlassTheirs: false,
+      bubbleColorMine: null,
+      bubbleColorTheirs: null,
+    });
+  };
+
   useEffect(() => {
-    applyTheme(initialTheme());
     // Просим систему не вычищать origin (IDB-зеркала) при нехватке места.
     ensurePersist().catch(() => {});
   }, []);
@@ -85,6 +98,10 @@ function Shell() {
         roomKey={roomKey}
         onLogout={handleLogout}
         onShowKey={() => setShowKey(true)}
+        onWipeDevice={() => void handleWipeDevice()}
+        settings={settings}
+        updateSettings={updateSettings}
+        resetAppearance={resetAppearance}
       />
       {showKey && (
         <div className="modal" onClick={() => setShowKey(false)}>

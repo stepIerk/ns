@@ -290,8 +290,7 @@ export async function blobPut(mediaId: string, blob: Blob, mime: string): Promis
   }
 }
 
-export async function dbStats(): Promise<{ msgs: number; blobs: number; bytes: number }> {
-  const msgDb = await getMsgDb();
+export async function dbStats(): Promise<{ msgs: number; blobs: number; bytes: number }> {  const msgDb = await getMsgDb();
   const msgs = await tx(msgDb, [MSG_STORE], 'readonly', (t) =>
     req(t.objectStore(MSG_STORE).count()),
   );
@@ -301,6 +300,39 @@ export async function dbStats(): Promise<{ msgs: number; blobs: number; bytes: n
     await metaBytes(t),
   ]);
   return { msgs, blobs, bytes };
+}
+
+// ---------- Локальные ассеты оформления (обои, аватар) ----------
+// Живут в META_STORE медиа-базы под ключами asset:*, в квоту 2 ГБ НЕ входят
+// (это оформление, не кэш; пользователь управляет ими явно).
+
+export interface StoredAsset {
+  blob: Blob;
+  mime: string;
+}
+
+export async function assetGet(key: string): Promise<StoredAsset | null> {
+  const db = await getMediaDb();
+  const v = await tx(db, [META_STORE], 'readonly', (t) =>
+    req(t.objectStore(META_STORE).get(`asset:${key}`)),
+  );
+  const r = v as { blob?: unknown; mime?: unknown } | undefined;
+  if (!r || !(r.blob instanceof Blob)) return null;
+  return { blob: r.blob, mime: typeof r.mime === 'string' ? r.mime : 'image/jpeg' };
+}
+
+export async function assetPut(key: string, blob: Blob, mime: string): Promise<void> {
+  const db = await getMediaDb();
+  await tx(db, [META_STORE], 'readwrite', (t) => {
+    t.objectStore(META_STORE).put({ blob, mime }, `asset:${key}`);
+  });
+}
+
+export async function assetDel(key: string): Promise<void> {
+  const db = await getMediaDb();
+  await tx(db, [META_STORE], 'readwrite', (t) => {
+    t.objectStore(META_STORE).delete(`asset:${key}`);
+  });
 }
 
 // ---------- Хранилище устройства ----------

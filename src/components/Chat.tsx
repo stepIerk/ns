@@ -1,31 +1,33 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import type { User } from 'firebase/auth';
 import {
-  Bell,
-  BellOff,
   Check,
   CheckCheck,
   Clock,
   ImagePlus,
   Loader2,
   Lock,
-  LogOut,
-  Moon,
-  QrCode,
   RefreshCw,
   Send,
   Settings,
-  Sun,
   WifiOff,
   X,
 } from 'lucide-react';
 import { useChat } from '../hooks/useChat';
 import { useMedia } from '../hooks/useMedia';
 import { isOnline, isTyping, lastSeenText, usePresence } from '../hooks/usePresence';
-import { dbStats, storageEstimate } from '../lib/db';
-import { useTheme } from '../lib/theme';
-import { ENABLE_MEDIA } from '../lib/flags';
+import { assetDel, assetGet, assetPut, dbStats, storageEstimate } from '../lib/db';
+import { prepareImage } from '../lib/image';
+import type { LocalSettings } from '../lib/settings';
 import { disablePush, enablePush, hasPushSubscription, registerSW } from '../lib/push';
+import SettingsSheet from './SettingsSheet';
 import type { ChatMessage } from '../types';
 
 interface Props {
@@ -33,6 +35,10 @@ interface Props {
   roomKey: CryptoKey;
   onShowKey: () => void;
   onLogout: () => void;
+  onWipeDevice: () => void;
+  settings: LocalSettings;
+  updateSettings: (patch: Partial<LocalSettings>) => void;
+  resetAppearance: () => void;
 }
 
 function isStandalone(): boolean {
@@ -58,7 +64,16 @@ function timeLabel(ts: number): string {
   return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
-export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
+export default function Chat({
+  user,
+  roomKey,
+  onShowKey,
+  onLogout,
+  onWipeDevice,
+  settings,
+  updateSettings,
+  resetAppearance,
+}: Props) {
   const { presence, setTyping, markSeen } = usePresence(user.uid);
 
   const {
@@ -78,17 +93,15 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
   } = useChat(user.uid, roomKey, presence.seenTs ?? undefined);
 
   const media = useMedia(user.uid, roomKey, notifyMessage);
-  const { theme, toggle } = useTheme();
 
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [pushOn, setPushOn] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
-  const [debugOpen, setDebugOpen] = useState(
-    () => typeof window !== 'undefined' && window.location.search.includes('debug=1'),
-  );
+  const [sheetOpen, setSheetOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingOlderRef = useRef(false);
@@ -100,6 +113,11 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
   // Якорь скролла для бесшовной догрузки вверх.
   const anchorRef = useRef<{ h: number; top: number } | null>(null);
   const [cacheInfo, setCacheInfo] = useState<string | null>(null);
+  // Локальное оформление: обои и аватар из IDB-ассетов.
+  const [wallpaperUrl, setWallpaperUrl] = useState<string | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  // Высота под клавиатуру iOS: лочим за visualViewport, чтобы бар не прыгал.
+  const [vvHeight, setVvHeight] = useState<number | null>(null);
 
   // SW регистрируем заранее (не в жесте), чтобы в жесте остались только
   // permission + subscribe — это требование iOS PWA.
@@ -107,6 +125,88 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     registerSW().catch(() => {});
     hasPushSubscription().then(setPushOn).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => setVvHeight(vv.height);
+    onResize();
+    vv.addEventListener('resize', onResize);
+    return () => vv.removeEventListener('resize', onResize);
+  }, []);
+
+  // Обои + аватар из локальных ассетов.
+  useEffect(() => {
+    let alive = true;
+    assetGet('wallpaper')
+      .then((a) => {
+        if (alive && a) setWallpaperUrl(URL.createObjectURL(a.blob));
+      })
+      .catch(() => {});
+    assetGet('avatar')
+      .then((a) => {
+        if (alive && a) setAvatarUrl(URL.createObjectURL(a.blob));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  useEffect(
+    () => () => {
+      if (wallpaperUrl) URL.revokeObjectURL(wallpaperUrl);
+    },
+    [wallpaperUrl],
+  );
+  useEffect(
+    () => () => {
+      if (avatarUrl) URL.revokeObjectURL(avatarUrl);
+    },
+    [avatarUrl],
+  );
+
+  const pickWallpaper = (f: File) => {
+    void prepareImage(f, 1600, 0.82)
+      .then(({ bytes, mime }) => assetPut('wallpaper', new Blob([bytes], { type: mime }), mime))
+      .then(() => assetGet('wallpaper'))
+      .then((a) => {
+        if (a) {
+          setWallpaperUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return URL.createObjectURL(a.blob);
+          });
+        }
+      })
+      .catch(() => {});
+  };
+  const clearWallpaper = () => {
+    setWallpaperUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    assetDel('wallpaper').catch(() => {});
+  };
+  const pickAvatar = (f: File) => {
+    void prepareImage(f, 256, 0.8)
+      .then(({ bytes, mime }) => assetPut('avatar', new Blob([bytes], { type: mime }), mime))
+      .then(() => assetGet('avatar'))
+      .then((a) => {
+        if (a) {
+          setAvatarUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return URL.createObjectURL(a.blob);
+          });
+        }
+      })
+      .catch(() => {});
+  };
+  const clearAvatar = () => {
+    setAvatarUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    assetDel('avatar').catch(() => {});
+  };
 
   // Фото подгружаются сами при появлении в ленте (кэш + пул в useMedia).
   useEffect(() => {
@@ -172,9 +272,22 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     }
   });
 
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    // Не дёргаем ленту, если пользователь читает старое.
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+    if (!bootedRef.current || nearBottom) {
+      bottomRef.current?.scrollIntoView({
+        behavior: bootedRef.current ? 'smooth' : 'auto',
+        block: 'end',
+      });
+      bootedRef.current = true;
+    }
+  }, [visible.length]);
+
   // Дебаг кэша: локальные счётчики, сети не касаемся.
   useEffect(() => {
-    if (!debugOpen) return;
     let alive = true;
     void (async () => {
       try {
@@ -192,21 +305,17 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     return () => {
       alive = false;
     };
-  }, [debugOpen, visible.length]);
-
-  useEffect(() => {
-    const el = listRef.current;
-    if (!el) return;
-    // Не дёргаем ленту, если пользователь читает старое (пузырь «печатает» не в счёт).
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
-    if (!bootedRef.current || nearBottom) {
-      bottomRef.current?.scrollIntoView({
-        behavior: bootedRef.current ? 'smooth' : 'auto',
-        block: 'end',
-      });
-      bootedRef.current = true;
-    }
   }, [visible.length]);
+
+  // Escape закрывает шторку.
+  useEffect(() => {
+    if (!sheetOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSheetOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sheetOpen]);
 
   const onSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -219,6 +328,8 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
       await sendText(body);
     } finally {
       setSending(false);
+      // Клавиатура остаётся: фокус не отдаём (кнопка не забирает его — см. onPointerDown ниже).
+      inputRef.current?.focus();
     }
   };
 
@@ -243,8 +354,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
 
   const offline = !online || fromCache;
   const standalone = isStandalone();
-  const shownError = error ?? (ENABLE_MEDIA ? media.mediaError : null);
-  const initial = (user.email?.[0] ?? '?').toUpperCase();
+  const shownError = error ?? (media.mediaError);
 
   // Статус собеседника (своя связь важнее: без неё всё остальное неизвестно).
   const peerOnline = isOnline(presence) && !offline;
@@ -275,12 +385,46 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
     [visible],
   );
 
+  const initial = (settings.peerName.trim()[0] ?? '?').toUpperCase();
+  const swInfo =
+    'serviceWorker' in navigator
+      ? navigator.serviceWorker.controller
+        ? 'sw: active (офлайн-шелл готов)'
+        : 'sw: нет контроля (открой онлайн и перезапусти)'
+      : 'sw: не поддерживается';
+  const debugLines = [
+    `online=${String(online)} fromCache=${String(fromCache)} snapshots=${snapCount} msgs=${visible.length}`,
+    `api=${apiBase}`,
+    ...(pushStatus ? [pushStatus] : []),
+    ...(snapError ? [`snap err: ${snapError}`] : []),
+    ...(cacheInfo ? [cacheInfo] : []),
+    swInfo,
+    'iOS: сообщения в фоне приходят только пушем.',
+  ];
+
+  // Кастомные цвета пузырей поверх темы (null = цвет темы).
+  const themeVars = {
+    ...(settings.bubbleColorMine ? { '--bubble-mine': settings.bubbleColorMine } : null),
+    ...(settings.bubbleColorTheirs ? { '--bubble-theirs': settings.bubbleColorTheirs } : null),
+    ...(settings.bubbleColorMine ? { '--glass-mine': settings.bubbleColorMine } : null),
+    ...(settings.bubbleColorTheirs ? { '--glass-theirs': settings.bubbleColorTheirs } : null),
+  } as CSSProperties;
+
+  // iOS: кнопка не должна забирать фокус у input, иначе клавиатура схлопнется.
+  const keepFocus = { onPointerDown: (e: React.PointerEvent) => e.preventDefault() };
+
   return (
-    <div className="chat">
+    <div className="chat" style={vvHeight ? { height: vvHeight, ...themeVars } : themeVars}>
       <header className="topbar">
-        <div className="avatar">{initial}</div>
+        <div className="avatar" style={avatarUrl ? undefined : { background: settings.avatarColor }}>
+          {avatarUrl ? (
+            <img src={avatarUrl} alt={settings.peerName} />
+          ) : (
+            <span style={{ color: '#fff' }}>{initial}</span>
+          )}
+        </div>
         <div className="top-title">
-          <strong>Личный чат</strong>
+          <strong>{settings.peerName}</strong>
           <span className="top-sub">
             <span className={`dot${peerOnline ? '' : ' off'}`} />
             <Lock size={11} />
@@ -290,34 +434,11 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
         <div className="top-actions">
           <button
             className="icon-btn"
-            onClick={toggle}
-            title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
-            aria-label="Переключить тему"
-          >
-            {theme === 'dark' ? <Sun size={19} /> : <Moon size={19} />}
-          </button>
-          <button
-            className={`icon-btn${pushOn ? ' active' : ''}`}
-            onClick={() => void onTogglePush()}
-            disabled={pushBusy}
-            title="Push-уведомления"
-            aria-label="Push-уведомления"
-          >
-            {pushOn ? <Bell size={19} /> : <BellOff size={19} />}
-          </button>
-          <button className="icon-btn" onClick={onShowKey} title="QR ключа" aria-label="QR ключа">
-            <QrCode size={19} />
-          </button>
-          <button
-            className={`icon-btn${debugOpen ? ' active' : ''}`}
-            onClick={() => setDebugOpen((v) => !v)}
+            onClick={() => setSheetOpen(true)}
             title="Настройки"
             aria-label="Настройки"
           >
             <Settings size={19} />
-          </button>
-          <button className="icon-btn" onClick={onLogout} title="Выйти" aria-label="Выйти">
-            <LogOut size={19} />
           </button>
         </div>
       </header>
@@ -329,50 +450,36 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
       )}
       {!standalone && !pushOn && (
         <div className="notice">
-          <Bell size={14} /> iOS: откройте с иконки «На экране Домой» и включите push
+          iOS: для уведомлений открой сайт с иконки «На экране Домой», затем включи push в
+          настройках.
         </div>
       )}
       {shownError && <div className="error" style={{ margin: '8px 12px 0' }}>{shownError}</div>}
-      {debugOpen && (
-        <div className="debug">
-          <div className="small">
-            online={String(online)} fromCache={String(fromCache)} snapshots={snapCount} msgs=
-            {visible.length}
-          </div>
-          <div className="small">api={apiBase}</div>
-          {cacheInfo && <div className="small">{cacheInfo}</div>}
-          <div className="small">
-            {'serviceWorker' in navigator
-              ? navigator.serviceWorker.controller
-                ? 'sw: active (офлайн-шелл готов)'
-                : 'sw: нет контроля (открой онлайн и перезапусти)'
-              : 'sw: не поддерживается'}
-          </div>
-          {pushStatus && <div className="small">{pushStatus}</div>}
-          {snapError && <div className="small">snap err: {snapError}</div>}
-          <div className="small muted">
-            iOS: сообщения в фоне приходят только пушем. Если snap растёт, а пуша нет — смотри
-            строку push выше.
-          </div>
-        </div>
-      )}
 
       <div className="list" ref={listRef}>
+        {wallpaperUrl && (
+          <>
+            <div className="wallpaper-layer" style={{ backgroundImage: `url("${wallpaperUrl}")` }} />
+            <div className="wallpaper-dim" />
+          </>
+        )}
         {visible.length > 0 && <div ref={topSentinelRef} aria-hidden />}
         {items.slice(-renderCount).map(({ m, day, showDay, grouped }) => {
           const mine = m.senderId === user.uid;
+          const glass = mine ? settings.bubbleGlassMine : settings.bubbleGlassTheirs;
           return (
             <div key={m.id} style={{ display: 'contents' }}>
               {showDay && <div className="day-divider">{day}</div>}
               <div className={`msg${mine ? ' mine' : ' theirs'}${grouped ? ' grouped' : ''}`}>
                 {m.kind === 'text' ? (
-                  <div className="bubble">
+                  <div className={`bubble${glass ? ' glass' : ''}`}>
                     {m.decryptError ? <i>Не удалось расшифровать</i> : m.text}
                     <div className="meta">
                       {timeLabel(m.createdAtMs)}
                       {m.pending ? (
                         m.status === 'error' ? (
                           <button
+                            {...keepFocus}
                             onClick={() => {
                               const draft = retryToDraft(m.clientMessageId);
                               if (draft) setText(draft);
@@ -393,7 +500,7 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
                     </div>
                   </div>
                 ) : (
-                  <div className="bubble bubble-photo">
+                  <div className={`bubble bubble-photo${glass ? ' glass' : ''}`}>
                     {(() => {
                       const st = media.photos[m.id];
                       if (!st || st.status === 'loading') return <div className="photo-loading" />;
@@ -446,32 +553,30 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
       </div>
 
       <form className="composer" onSubmit={(e) => void onSubmit(e)}>
-        {ENABLE_MEDIA && (
-          <>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                e.target.value = '';
-                if (f) void media.sendPhoto(f);
-              }}
-            />
-            <button
-              type="button"
-              className="icon-btn"
-              disabled={media.photoBusy}
-              onClick={() => fileRef.current?.click()}
-              title="Отправить фото"
-              aria-label="Отправить фото"
-            >
-              {media.photoBusy ? <Loader2 size={20} className="spin" /> : <ImagePlus size={20} />}
-            </button>
-          </>
-        )}
         <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (f) void media.sendPhoto(f);
+          }}
+        />
+        <button
+          type="button"
+          className="icon-btn"
+          disabled={media.photoBusy}
+          onClick={() => fileRef.current?.click()}
+          onPointerDown={(e) => e.preventDefault()}
+          title="Отправить фото"
+          aria-label="Отправить фото"
+        >
+          {media.photoBusy ? <Loader2 size={20} className="spin" /> : <ImagePlus size={20} />}
+        </button>
+        <input
+          ref={inputRef}
           className="composer-input"
           value={text}
           onChange={(e) => {
@@ -481,18 +586,20 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
           }}
           placeholder="Сообщение"
           maxLength={4000}
+          enterKeyHint="send"
         />
         <button
           type="submit"
           className="send-btn"
           disabled={sending || !text.trim()}
+          onPointerDown={(e) => e.preventDefault()}
           aria-label="Отправить"
         >
           {sending ? <Loader2 size={18} className="spin" /> : <Send size={18} />}
         </button>
       </form>
 
-      {ENABLE_MEDIA && media.viewer && (
+      {media.viewer && (
         <div className="modal viewer" onClick={() => media.closeViewer()}>
           <img src={media.viewer.url} alt="фото" onClick={(e) => e.stopPropagation()} />
           <button className="viewer-close" onClick={() => media.closeViewer()}>
@@ -500,6 +607,29 @@ export default function Chat({ user, roomKey, onShowKey, onLogout }: Props) {
           </button>
         </div>
       )}
+
+      <SettingsSheet
+        open={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        settings={settings}
+        update={updateSettings}
+        resetAppearance={resetAppearance}
+        avatarUrl={avatarUrl}
+        onPickAvatar={pickAvatar}
+        onClearAvatar={clearAvatar}
+        wallpaperUrl={wallpaperUrl}
+        onPickWallpaper={pickWallpaper}
+        onClearWallpaper={clearWallpaper}
+        pushOn={pushOn}
+        pushBusy={pushBusy}
+        onTogglePush={() => void onTogglePush()}
+        pushStatus={pushStatus}
+        email={user.email ?? ''}
+        onLogout={onLogout}
+        onShowKey={onShowKey}
+        onWipeDevice={onWipeDevice}
+        debugLines={debugLines}
+      />
     </div>
   );
 }

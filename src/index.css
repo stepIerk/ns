@@ -424,3 +424,226 @@ button { font-family: inherit; }
 }
 
 .scan-video { width: 100%; border-radius: 12px; background: #000; }
+
+/* ---------- Матовое стекло ---------- */
+
+.topbar,
+.composer {
+  position: relative;
+  background: color-mix(in srgb, var(--bg) 58%, transparent);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+}
+/* Блик сверху */
+.topbar::before,
+.composer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 42%);
+}
+[data-theme='dark'] .topbar::before,
+[data-theme='dark'] .composer::before {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 42%);
+}
+
+/* Стеклянные пузыри (опция в настройках, цвет задаётся --glass-mine/theirs) */
+.mine .bubble.glass {
+  background: color-mix(in srgb, var(--glass-mine, var(--bubble-mine)) 52%, transparent);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  box-shadow: var(--shadow);
+  color: var(--bubble-mine-text);
+}
+.theirs .bubble.glass {
+  background: color-mix(in srgb, var(--glass-theirs, var(--bubble-theirs)) 52%, transparent);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  box-shadow: var(--shadow);
+  color: var(--bubble-theirs-text);
+}
+
+/* ---------- Обои чата ---------- */
+
+.list { position: relative; }
+.wallpaper-layer,
+.wallpaper-dim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.wallpaper-layer {
+  background-size: cover;
+  background-position: center;
+}
+.wallpaper-dim { background: color-mix(in srgb, var(--bg) 62%, transparent); }
+.list > *:not(.wallpaper-layer):not(.wallpaper-dim) { position: relative; z-index: 1; }
+
+/* ---------- Аватар собеседника ---------- */
+
+.avatar img {
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+/* ---------- Шторка настроек ---------- */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+  z-index: 30;
+}
+.sheet-backdrop.open { opacity: 1; pointer-events: auto; }
+
+.sheet {
+  position: fixed;
+  top: 0; right: 0;
+  height: 100dvh;
+  width: min(400px, 100%);
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  z-index: 31;
+  transform: translateX(102%);
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0.24, 1);
+  display: flex;
+  flex-direction: column;
+}
+.sheet.open { transform: translateX(0); }
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  padding-top: calc(14px + env(safe-area-inset-top));
+  border-bottom: 1px solid var(--border);
+}
+.sheet-head strong { flex: 1; font-size: 17px; font-weight: 650; }
+
+.sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
+}
+
+.set-group { margin: 14px 0 4px; }
+.set-group > h4 {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: 15px;
+}
+.set-row:first-of-type { border-top: none; }
+.set-row .grow { flex: 1; min-width: 0; }
+.set-row .sub { font-size: 12.5px; color: var(--text-2); margin-top: 2px; }
+
+.set-input {
+  width: 100%;
+  padding: 9px 12px;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  outline: none;
+}
+
+.switch {
+  position: relative;
+  width: 48px; height: 29px;
+  border: none;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background 0.2s;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 23px; height: 23px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.2s;
+}
+.switch[aria-checked='true'] { background: var(--ok); border-color: transparent; }
+.switch[aria-checked='true']::after { transform: translateX(19px); }
+
+.segmented {
+  display: flex;
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding: 2px;
+  gap: 2px;
+}
+.segmented button {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 7px 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.segmented button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+.swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+.swatch {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.swatch.active { border-color: var(--text); }
+
+input[type='color'].colorwell {
+  width: 40px; height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input-bg);
+  padding: 2px;
+  cursor: pointer;
+}
+
+.wallpaper-preview {
+  width: 100%;
+  height: 90px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background-size: cover;
+  background-position: center;
+  background-color: var(--surface-2);
+  margin-top: 8px;
+}
