@@ -53,13 +53,26 @@ export function useMessageReactions(
     const db = getRtdb();
     if (!db) return () => {};
     const r = ref(db, `reactions/${msgId}`);
-    const unsub = onValue(r, (snap) => {
-      const map = sanitize(snap.val());
-      if (!alive) return;
-      mirrorRef.current = map;
-      setReactions(map);
-      reactPut(msgId, map).catch(() => {});
-    });
+    const unsub = onValue(
+      r,
+      (snap) => {
+        const map = sanitize(snap.val());
+        if (!alive) return;
+        mirrorRef.current = map;
+        setReactions(map);
+        reactPut(msgId, map).catch(() => {});
+      },
+      (err) => {
+        // Раньше провал был немым (permission_denied при кривых правилах).
+        // Теперь видно тостом — чинится публикацией правил RTDB из репо.
+        if (!alive) return;
+        console.warn(
+          '[reactions] listen failed',
+          err && typeof err === 'object' && 'code' in err ? err.code : err,
+        );
+        setReactError('Реакции недоступны — проверь правила RTDB');
+      },
+    );
     return () => {
       alive = false;
       unsub();

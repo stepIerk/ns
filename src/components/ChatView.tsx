@@ -157,10 +157,17 @@ export default function ChatView(p: ChatViewProps) {
   });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastShownRef = useRef<string | null>(null);
   const notify = useCallback((msg: string) => {
+    // Дедуп: ошибку слушателя кинет каждый из ~120 пузырей — показываем раз.
+    if (toastShownRef.current === msg) return;
+    toastShownRef.current = msg;
     setToast(msg);
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 2200);
+    toastTimer.current = setTimeout(() => {
+      toastShownRef.current = null;
+      setToast(null);
+    }, 2200);
   }, []);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
