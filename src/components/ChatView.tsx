@@ -147,7 +147,7 @@ export default function ChatView(p: ChatViewProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
   const topbarRef = useRef<HTMLElement | null>(null);
@@ -331,6 +331,7 @@ export default function ChatView(p: ChatViewProps) {
     const body = text.trim();
     if (!body || busy) return;
     setText('');
+    fitInput();
     setTypingActive(false);
     setLocalSending(true);
     try {
@@ -340,6 +341,14 @@ export default function ChatView(p: ChatViewProps) {
       // Клавиатура остаётся: фокус не отдаём (кнопка не забирает его — см. onPointerDown ниже).
       inputRef.current?.focus();
     }
+  };
+
+  // Автовысота поля: растёт до 4 строк (дальше — скролл внутри, см. CSS max-height).
+  const fitInput = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
   };
 
   // Разметка ленты (разделители дней, группировка подряд своих) — чисто,
@@ -533,14 +542,22 @@ export default function ChatView(p: ChatViewProps) {
         >
           {photoBusy ? <Loader2 size={20} className="spin" /> : <Plus size={20} />}
         </button>
-        <input
+        <textarea
           ref={inputRef}
           className="composer-input"
           value={text}
+          rows={1}
           onChange={(e) => {
             const v = e.target.value;
             setText(v);
             setTypingActive(v.trim().length > 0);
+            fitInput();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              void onSubmit();
+            }
           }}
           placeholder="Сообщение"
           maxLength={4000}

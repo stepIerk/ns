@@ -374,15 +374,15 @@ button { font-family: inherit; }
 
 .composer {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 4px;
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: calc(10px + env(safe-area-inset-bottom) + max(0px, calc(var(--kb-inset, 0px) - env(safe-area-inset-bottom, 0px))));
-  padding: 6px 6px 6px 8px;
+  left: 20px;
+  right: 20px;
+  bottom: calc(4px + env(safe-area-inset-bottom) + max(0px, calc(var(--kb-inset, 0px) - env(safe-area-inset-bottom, 0px))));
+  padding: 5px 5px 5px 6px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 26px;
   box-shadow: var(--shadow);
   transition: bottom 0.22s ease-out;
   z-index: 5;
@@ -391,19 +391,27 @@ button { font-family: inherit; }
 .composer-input {
   flex: 1;
   min-width: 0;
-  padding: 10px 8px;
+  padding: 7px 6px;
   font-size: 16px;
+  line-height: 1.4;
   font-family: inherit;
   color: var(--text);
   background: transparent;
   border: none;
   border-radius: 0;
   outline: none;
+  resize: none;
+  max-height: 106px; /* ~4 строки (4×22.4 + паддинги), дальше скролл внутри поля */
+  overflow-y: auto;
 }
 .composer-input::placeholder { color: var(--text-2); }
 
+.composer-input::-webkit-scrollbar {
+  display: none;
+}
+
 .send-btn {
-  width: 40px; height: 40px;
+  width: 36px; height: 36px;
   border-radius: 50%;
   border: none;
   background: var(--text);
