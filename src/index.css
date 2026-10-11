@@ -4,6 +4,8 @@
 :root,
 [data-theme='light'] {
   color-scheme: light;
+  --glass-blur: 7px; /* блюр матового стекла шапки/низа */
+  --glass-bubble-blur: 7px; /* блюр стеклянных пузырей */
   --bg: #f6f6f4;
   --surface: #ffffff;
   --surface-2: #efeeeb;
@@ -48,6 +50,13 @@
 
 * { box-sizing: border-box; }
 
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -57,7 +66,7 @@ body {
 }
 
 #root {
-  min-height: 100dvh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   max-width: 720px;
@@ -72,6 +81,7 @@ body {
   align-items: flex-start;
   padding: 48px 16px 24px;
   flex: 1;
+  overflow-y: auto;
 }
 
 .auth-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
@@ -172,7 +182,7 @@ button { font-family: inherit; }
 
 /* ---------- Чат ---------- */
 
-.chat { display: flex; flex-direction: column; height: 100dvh; }
+.chat { display: flex; flex-direction: column; height: 100%; }
 
 .topbar {
   display: flex;
@@ -225,6 +235,8 @@ button { font-family: inherit; }
 .list {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-bottom: calc(var(--kb-inset, 0px) + 12px);
   padding: 14px 12px 8px;
   display: flex;
   flex-direction: column;
@@ -350,6 +362,8 @@ button { font-family: inherit; }
   align-items: flex-end;
   gap: 6px;
   padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
+  margin-bottom: var(--kb-inset, 0px);
+  transition: margin-bottom 0.22s ease-out;
   border-top: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(12px);
@@ -430,9 +444,9 @@ button { font-family: inherit; }
 .topbar,
 .composer {
   position: relative;
-  background: color-mix(in srgb, var(--bg) 58%, transparent);
-  backdrop-filter: blur(22px) saturate(1.5);
-  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  background: color-mix(in srgb, var(--bg) 45%, transparent);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
 }
 /* Блик сверху */
 .topbar::before,
@@ -450,37 +464,44 @@ button { font-family: inherit; }
 
 /* Стеклянные пузыри (опция в настройках, цвет задаётся --glass-mine/theirs) */
 .mine .bubble.glass {
-  background: color-mix(in srgb, var(--glass-mine, var(--bubble-mine)) 52%, transparent);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  background: color-mix(in srgb, var(--glass-mine, var(--bubble-mine)) 45%, transparent);
+  backdrop-filter: blur(var(--glass-bubble-blur)) saturate(1.3);
+  -webkit-backdrop-filter: blur(var(--glass-bubble-blur)) saturate(1.3);
   border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
   box-shadow: var(--shadow);
   color: var(--bubble-mine-text);
 }
 .theirs .bubble.glass {
-  background: color-mix(in srgb, var(--glass-theirs, var(--bubble-theirs)) 52%, transparent);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  background: color-mix(in srgb, var(--glass-theirs, var(--bubble-theirs)) 45%, transparent);
+  backdrop-filter: blur(var(--glass-bubble-blur)) saturate(1.3);
+  -webkit-backdrop-filter: blur(var(--glass-bubble-blur)) saturate(1.3);
   border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
   box-shadow: var(--shadow);
   color: var(--bubble-theirs-text);
 }
 
-/* ---------- Обои чата ---------- */
+/* ---------- Обои чата (фиксированные, не скроллятся) ---------- */
 
-.list { position: relative; }
-.wallpaper-layer,
-.wallpaper-dim {
+.chat { position: relative; }
+.wallpaper-layer {
   position: absolute;
   inset: 0;
-  pointer-events: none;
-}
-.wallpaper-layer {
+  z-index: 0;
   background-size: cover;
   background-position: center;
+  pointer-events: none;
 }
-.wallpaper-dim { background: color-mix(in srgb, var(--bg) 62%, transparent); }
-.list > *:not(.wallpaper-layer):not(.wallpaper-dim) { position: relative; z-index: 1; }
+.topbar,
+.list,
+.composer,
+.notice {
+  z-index: 1;
+}
+.list,
+.composer,
+.notice {
+  position: relative;
+}
 
 /* ---------- Аватар собеседника ---------- */
 

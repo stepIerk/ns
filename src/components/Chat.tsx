@@ -116,8 +116,6 @@ export default function Chat({
   // Локальное оформление: обои и аватар из IDB-ассетов.
   const [wallpaperUrl, setWallpaperUrl] = useState<string | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  // Высота под клавиатуру iOS: лочим за visualViewport, чтобы бар не прыгал.
-  const [vvHeight, setVvHeight] = useState<number | null>(null);
 
   // SW регистрируем заранее (не в жесте), чтобы в жесте остались только
   // permission + subscribe — это требование iOS PWA.
@@ -126,13 +124,62 @@ export default function Chat({
     hasPushSubscription().then(setPushOn).catch(() => {});
   }, []);
 
+  // Клавиатура iOS, профессиональная схема:
+  // - document не скроллится вообще (см. CSS html/body) — Safari нечего «подбрасывать»;
+  // - высота клавиатуры экспортируется в --kb-inset (resize+scroll visualViewport),
+  //   композер поднимается через margin с transition — плавно, как в TG;
+  // - preemptive focus без автоскролла; blur+сброс при сворачивании.
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
-    const onResize = () => setVvHeight(vv.height);
-    onResize();
-    vv.addEventListener('resize', onResize);
-    return () => vv.removeEventListener('resize', onResize);
+    const root = document.documentElement;
+    const sync = () => {
+      const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      root.style.setProperty('--kb-inset', `${Math.round(inset)}px`);
+    };
+    sync();
+    vv.addEventListener('resize', sync);
+    vv.addEventListener('scroll', sync);
+    window.addEventListener('focusin', sync);
+    window.addEventListener('focusout', sync);
+    return () => {
+      vv.removeEventListener('resize', sync);
+      vv.removeEventListener('scroll', sync);
+      window.removeEventListener('focusin', sync);
+      window.removeEventListener('focusout', sync);
+      root.style.removeProperty('--kb-inset');
+    };
+  }, []);
+
+  useEffect(() => {
+    const reset = () => {
+      inputRef.current?.blur();
+      window.scrollTo(0, 0);
+      document.documentElement.style.removeProperty('--kb-inset');
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') reset();
+    };
+    window.addEventListener('pagehide', reset);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('pagehide', reset);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
+  // Упреждающий фокус без автоскролла Safari (иначе он панорамирует страницу).
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const onTouch = (e: TouchEvent) => {
+      if (document.activeElement !== el) {
+        e.preventDefault();
+        el.focus({ preventScroll: true });
+      }
+    };
+    el.addEventListener('touchstart', onTouch, { passive: false });
+    return () => el.removeEventListener('touchstart', onTouch);
   }, []);
 
   // Обои + аватар из локальных ассетов.
@@ -414,7 +461,10 @@ export default function Chat({
   const keepFocus = { onPointerDown: (e: React.PointerEvent) => e.preventDefault() };
 
   return (
-    <div className="chat" style={vvHeight ? { height: vvHeight, ...themeVars } : themeVars}>
+    <div className="chat" style={themeVars}>
+      {wallpaperUrl && (
+        <div className="wallpaper-layer" style={{ backgroundImage: `url("${wallpaperUrl}")` }} />
+      )}
       <header className="topbar">
         <div className="avatar" style={avatarUrl ? undefined : { background: settings.avatarColor }}>
           {avatarUrl ? (
@@ -457,12 +507,6 @@ export default function Chat({
       {shownError && <div className="error" style={{ margin: '8px 12px 0' }}>{shownError}</div>}
 
       <div className="list" ref={listRef}>
-        {wallpaperUrl && (
-          <>
-            <div className="wallpaper-layer" style={{ backgroundImage: `url("${wallpaperUrl}")` }} />
-            <div className="wallpaper-dim" />
-          </>
-        )}
         {visible.length > 0 && <div ref={topSentinelRef} aria-hidden />}
         {items.slice(-renderCount).map(({ m, day, showDay, grouped }) => {
           const mine = m.senderId === user.uid;
