@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Moon, Sun, Wifi, WifiOff } from 'lucide-react';
 import ChatView from '../components/ChatView';
 import type { PhotoState } from '../hooks/useMedia';
+import type { ReactionMap } from '../hooks/useReactions';
 import { useApplyTheme } from '../lib/theme';
 import { useLocalSettings } from '../lib/settings';
 import type { ChatMessage } from '../types';
@@ -74,7 +75,11 @@ interface PoolMsg extends ChatMessage {
   artSeed?: number;
 }
 
-function buildPool(): { messages: PoolMsg[]; photos: Record<string, PhotoState> } {
+function buildPool(): {
+  messages: PoolMsg[];
+  photos: Record<string, PhotoState>;
+  seeds: Record<string, ReactionMap>;
+} {
   const messages: PoolMsg[] = [];
   const photos: Record<string, PhotoState> = {};
   let ts = Date.now() - 3 * 24 * 3600 * 1000; // три дня назад
@@ -117,7 +122,32 @@ function buildPool(): { messages: PoolMsg[]; photos: Record<string, PhotoState> 
       status: mine ? (i < 150 ? 'read' : 'sent') : 'sent',
     });
   }
-  return { messages, photos };
+  // Демо ответов и реакций (видимый хвост — последние ~80):
+  // текст→текст, фото→текст, битая ссылка (родитель выгружен).
+  const link = (childIdx: number, parentIdx: number | null) => {
+    const c = messages[childIdx];
+    if (!c) return;
+    if (parentIdx == null) {
+      c.replyTo = { id: 'pv-missing', senderId: PEER };
+      return;
+    }
+    const p = messages[parentIdx];
+    if (!p) return;
+    c.replyTo = { id: p.id, clientMessageId: p.clientMessageId, senderId: p.senderId };
+  };
+  link(163, 160);
+  link(150, null);
+  const photoIdx = messages.findIndex((m, i) => m.kind === 'photo' && i > 150);
+  if (photoIdx > 2) link(photoIdx, photoIdx - 2);
+  const seeds: Record<string, ReactionMap> = {};
+  const seed = (idx: number, map: ReactionMap) => {
+    const m = messages[idx];
+    if (m) seeds[m.id] = map;
+  };
+  seed(165, { [PEER]: '❤️' });
+  seed(160, { [ME]: '👍', [PEER]: '👍' });
+  seed(155, { [PEER]: '🔥' });
+  return { messages, photos, seeds };
 }
 
 const PAGE = 60;
@@ -302,6 +332,8 @@ export default function Preview() {
         onLogout={() => {}}
         onWipeDevice={() => {}}
         debugLines={['preview: /test · 170 сообщений в пуле', 'настройки — общие с боевым (localStorage)']}
+        seedReactions={pool.seeds}
+        reactionsLocalOnly
       />
     </>
   );

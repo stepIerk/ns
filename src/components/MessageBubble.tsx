@@ -1,0 +1,498 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, CheckCheck, Clock, Copy, RefreshCw, Reply } from 'lucide-react';
+import type { PhotoState } from '../hooks/useMedia';
+import {
+  QUICK_REACTION,
+  REACTION_PALETTE,
+  useMessageReactions,
+  type ReactionMap,
+} from '../hooks/useReactions';
+import { decryptText } from '../lib/crypto';
+import { msgById } from '../lib/db';
+import type { ChatMessage, ReplyTarget } from '../types';
+
+function timeLabel(ts: number): string {
+  return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+function buzz(ms = 10): void {
+  try {
+    navigator.vibrate?.(ms);
+  } catch {
+    // ignore (iOS)
+  }
+}
+
+// Порог свайпа-ответа и макс. сдвиг (как в TG — короткий сдвиг + иконка).
+const SWIPE_THRESHOLD = 48;
+const SWIPE_MAX = 72;
+const DOUBLE_TAP_MS = 300;
+const LONG_PRESS_MS = 500;
+
+// ---------- Цитата внутри пузыря ----------
+
+interface QuoteProps {
+  replyTo: ReplyTarget;
+  meUid: string;
+  peerName: string;
+  visibleMap: Map<string, ChatMessage>;
+  roomKey?: CryptoKey;
+  onJump: (t: ReplyTarget) => void;
+}
+
+function ReplyQuote({ replyTo, meUid, peerName, visibleMap, roomKey, onJump }: QuoteProps) {
+  const nameOf = (senderId: string) => (senderId === meUid ? 'Вы' : peerName);
+  // Синхронный путь — прямо в рендере (без setState в эффекте).
+  const direct = useMemo(() => {
+    const parent =
+      visibleMap.get(replyTo.id) ??
+      (replyTo.clientMessageId ? visibleMap.get(`cm:${replyTo.clientMessageId}`) : undefined);
+    if (!parent) return null;
+    return {
+      name: nameOf(parent.senderId),
+      text:
+        parent.kind === 'photo'
+          ? '📷 Фото'
+          : parent.decryptError
+            ? 'Сообщение'
+            : truncate(parent.text ?? 'Сообщение', 90),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replyTo.id, replyTo.clientMessageId, visibleMap, meUid, peerName]);
+
+  // Асинхронный путь (родитель вне окна): IDB → расшифровка → фолбэк.
+  // Все setState — только в асинхронных колбэках.
+  const [remote, setRemote] = useState<{ name: string; text: string } | null>(null);
+  useEffect(() => {
+    if (direct || !roomKey) return;
+    let alive = true;
+    msgById(replyTo.id)
+      .then(async (rec) => {
+        if (!alive) return;
+        if (!rec) {
+          setRemote({ name: '', text: 'Сообщение' });
+          return;
+        }
+        if (rec.kind === 'photo') {
+          setRemote({ name: nameOf(rec.senderId), text: '📷 Фото' });
+          return;
+        }
+        try {
+          if (rec.ciphertext && rec.iv) {
+            const t = await decryptText(roomKey, rec.iv, rec.ciphertext);
+            if (alive) setRemote({ name: nameOf(rec.senderId), text: truncate(t, 90) });
+          } else if (alive) {
+            setRemote({ name: nameOf(rec.senderId), text: 'Сообщение' });
+          }
+        } catch {
+          if (alive) setRemote({ name: nameOf(rec.senderId), text: 'Сообщение' });
+        }
+      })
+      .catch(() => {
+        if (alive) setRemote({ name: '', text: 'Сообщение' });
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [direct, roomKey, replyTo.id]);
+
+  const resolved = direct ?? remote ?? (!roomKey ? { name: '', text: 'Сообщение' } : null);
+  if (!resolved) return null;
+  return (
+    <button
+      className="quote"
+      onPointerDown={(e) => e.preventDefault()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onJump(replyTo);
+      }}
+    >
+      <span className="quote-bar" />
+      <span className="quote-body">
+        {resolved.name ? <strong>{resolved.name}</strong> : null}
+        <span>{resolved.text}</span>
+      </span>
+    </button>
+  );
+}
+
+// ---------- Меню реакций ----------
+
+interface MenuProps {
+  myEmoji?: string;
+  canCopy: boolean;
+  flip: boolean;
+  onPick: (emoji: string) => void;
+  onCopy: () => void;
+}
+
+function ReactionMenu({ myEmoji, canCopy, flip, onPick, onCopy }: MenuProps) {
+  return (
+    <div
+      className={`react-popover${flip ? ' below' : ''}`}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <div className="react-row">
+        {REACTION_PALETTE.map((e) => (
+          <button
+            key={e}
+            className={`react-emoji${myEmoji === e ? ' active' : ''}`}
+            onPointerDown={(ev) => ev.preventDefault()}
+            onClick={() => onPick(e)}
+            aria-label={`Реакция ${e}`}
+          >
+            {e}
+          </button>
+        ))}
+      </div>
+      {canCopy && (
+        <button
+          className="react-copy"
+          onPointerDown={(ev) => ev.preventDefault()}
+          onClick={onCopy}
+        >
+          <Copy size={14} /> Скопировать
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---------- Пузырь ----------
+
+export interface MessageBubbleProps {
+  m: ChatMessage;
+  mine: boolean;
+  grouped: boolean;
+  glass: boolean;
+  meUid: string;
+  peerName: string;
+  roomKey?: CryptoKey;
+  photos: Record<string, PhotoState>;
+  menuOpen: boolean;
+  menuFlip: boolean;
+  onOpenMenu: (flip: boolean) => void;
+  onCloseMenu: () => void;
+  onReply: (m: ChatMessage) => void;
+  onJump: (t: ReplyTarget) => void;
+  onErrorTap: (m: ChatMessage) => void;
+  onRetryPhoto: (m: ChatMessage) => void;
+  onOpenViewer: (id: string) => void;
+  onCopyText: (text: string) => void;
+  notify: (msg: string) => void;
+  visibleMap: Map<string, ChatMessage>;
+  seedReactions?: ReactionMap;
+  reactionsLocalOnly?: boolean;
+}
+
+export default function MessageBubble(props: MessageBubbleProps) {
+  const {
+    m,
+    mine,
+    grouped,
+    glass,
+    meUid,
+    peerName,
+    roomKey,
+    photos,
+    menuOpen,
+    menuFlip,
+    onOpenMenu,
+    onCloseMenu,
+    onReply,
+    onJump,
+    onErrorTap,
+    onRetryPhoto,
+    onOpenViewer,
+    onCopyText,
+    notify,
+    visibleMap,
+    seedReactions,
+    reactionsLocalOnly,
+  } = props;
+
+  const { reactions, toggle, reactError } = useMessageReactions(m.pending ? '' : m.id, meUid, {
+    seed: seedReactions,
+    localOnly: reactionsLocalOnly,
+  });
+
+  useEffect(() => {
+    if (reactError) notify(reactError);
+  }, [reactError, notify]);
+
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const gestureRef = useRef<{ x: number; y: number; lock: 'h' | 'v' | null } | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [snapping, setSnapping] = useState(false);
+  const lastTapRef = useRef(0);
+  const suppressClickRef = useRef(false);
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearLongPress = () => {
+    if (longPressRef.current) {
+      clearTimeout(longPressRef.current);
+      longPressRef.current = null;
+    }
+  };
+
+  // Свайп-влево → ответ. Вертикаль отдаём скроллу ленты (pan-y + lock).
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (!e.isPrimary) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // Новый жест — новый шанс: сбрасываем флаг глотания клика
+    // (иначе прерванный свайп съест следующий тап).
+    suppressClickRef.current = false;
+    gestureRef.current = { x: e.clientX, y: e.clientY, lock: null };
+    setSnapping(false);
+    // Лонг-пресс — только фото (у текста меню по тапу, картинка занята viewer'ом).
+    if (m.kind === 'photo' && !m.pending) {
+      longPressRef.current = setTimeout(() => {
+        longPressRef.current = null;
+        gestureRef.current = null;
+        setOffset(0);
+        suppressClickRef.current = true;
+        buzz(15);
+        onOpenMenu(measureFlip());
+      }, LONG_PRESS_MS);
+    }
+  };
+
+  const measureFlip = (): boolean => {
+    const el = wrapRef.current;
+    const list = el?.closest('.list');
+    if (!el || !list) return false;
+    return el.getBoundingClientRect().top - list.getBoundingClientRect().top < 250;
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const g = gestureRef.current;
+    if (!g || !e.isPrimary) return;
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) clearLongPress();
+    if (!g.lock) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      g.lock = Math.abs(dx) > Math.abs(dy) && dx < 0 ? 'h' : 'v';
+      if (g.lock === 'h') onCloseMenu();
+      else {
+        gestureRef.current = null;
+        return;
+      }
+    }
+    if (g.lock === 'h') {
+      if (Math.abs(dx) > 10) suppressClickRef.current = true;
+      setOffset(m.pending ? 0 : Math.max(-SWIPE_MAX, Math.min(0, dx)));
+    }
+  };
+
+  const endGesture = () => {
+    clearLongPress();
+    const g = gestureRef.current;
+    gestureRef.current = null;
+    if (!g || g.lock !== 'h') return;
+    setSnapping(true);
+    if (offset <= -SWIPE_THRESHOLD && !m.pending) {
+      buzz();
+      onReply(m);
+    }
+    setOffset(0);
+  };
+
+  // Тап: текст — меню, дабл-тап — быстрый ❤️. Тапы по картинке не доходят
+  // (stopPropagation в img — там viewer), лонг-пресс фото — меню.
+  const onBubbleClick = () => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    if (m.pending) return;
+    const now = Date.now();
+    if (now - lastTapRef.current < DOUBLE_TAP_MS) {
+      lastTapRef.current = 0;
+      onCloseMenu();
+      void toggle(QUICK_REACTION).then((ok) => {
+        if (ok) buzz();
+      });
+      return;
+    }
+    lastTapRef.current = now;
+    if (m.kind === 'text') onOpenMenu(measureFlip());
+  };
+
+  const distinct = (() => {
+    const byEmoji = new Map<string, { count: number; mine: boolean }>();
+    for (const [uid, e] of Object.entries(reactions)) {
+      const cur = byEmoji.get(e) ?? { count: 0, mine: false };
+      cur.count += 1;
+      if (uid === meUid) cur.mine = true;
+      byEmoji.set(e, cur);
+    }
+    return [...byEmoji.entries()];
+  })();
+
+  const keepFocus = { onPointerDown: (e: React.PointerEvent) => e.preventDefault() };
+
+  const metaNode = (
+    <div className="meta">
+      {timeLabel(m.createdAtMs)}
+      {m.pending ? (
+        m.status === 'error' ? (
+          <button
+            {...keepFocus}
+            onClick={(e) => {
+              e.stopPropagation();
+              onErrorTap(m);
+            }}
+          >
+            ошибка · вернуть в ввод
+          </button>
+        ) : (
+          <Clock size={12} />
+        )
+      ) : mine ? (
+        m.status === 'read' ? (
+          <CheckCheck size={13} className="tick-read" />
+        ) : (
+          <Check size={13} />
+        )
+      ) : null}
+    </div>
+  );
+
+  const contentNode =
+    m.kind === 'text' ? (
+      <div className={`bubble${glass ? ' glass' : ''}`}>
+        {m.replyTo && (
+          <ReplyQuote
+            replyTo={m.replyTo}
+            meUid={meUid}
+            peerName={peerName}
+            visibleMap={visibleMap}
+            roomKey={roomKey}
+            onJump={onJump}
+          />
+        )}
+        {m.decryptError ? <i>Не удалось расшифровать</i> : m.text}
+        {metaNode}
+      </div>
+    ) : (
+      <div className={`bubble bubble-photo${glass ? ' glass' : ''}`}>
+        {m.replyTo && (
+          <ReplyQuote
+            replyTo={m.replyTo}
+            meUid={meUid}
+            peerName={peerName}
+            visibleMap={visibleMap}
+            roomKey={roomKey}
+            onJump={onJump}
+          />
+        )}
+        {(() => {
+          const st = photos[m.id];
+          if (!st || st.status === 'loading') return <div className="photo-loading" />;
+          if (st.status === 'error') {
+            return (
+              <div className="photo-error">
+                Не удалось загрузить фото
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRetryPhoto(m);
+                  }}
+                >
+                  <RefreshCw size={13} /> Повторить
+                </button>
+              </div>
+            );
+          }
+          return (
+            <img
+              src={st.url}
+              alt="фото"
+              loading="lazy"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenViewer(m.id);
+              }}
+            />
+          );
+        })()}
+        {metaNode}
+      </div>
+    );
+
+  return (
+    <div
+      className={`msg${mine ? ' mine' : ' theirs'}${grouped ? ' grouped' : ''}`}
+      data-mid={m.id}
+      data-cmid={m.clientMessageId}
+    >
+      <div
+        className="swipe-wrap"
+        ref={wrapRef}
+        onContextMenu={(e) => e.preventDefault()}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endGesture}
+        onPointerCancel={() => {
+          clearLongPress();
+          gestureRef.current = null;
+          setSnapping(true);
+          setOffset(0);
+        }}
+      >
+        <div className="swipe-hint" aria-hidden>
+          <Reply size={18} />
+        </div>
+        <div
+          className={`swipe-shift${snapping ? ' snap' : ''}`}
+          style={{ transform: `translateX(${offset}px)` }}
+          onClick={onBubbleClick}
+        >
+          {contentNode}
+        </div>
+        {distinct.length > 0 && (
+          <div className="react-pill" onClick={(e) => e.stopPropagation()}>
+            {distinct.map(([emoji, info]) => (
+              <button
+                key={emoji}
+                className={`react-pill-item${info.mine ? ' active' : ''}`}
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  void toggle(emoji);
+                }}
+                aria-label={`Реакция ${emoji}${info.count > 1 ? ` ×${info.count}` : ''}`}
+              >
+                <span>{emoji}</span>
+                {info.count > 1 && <b>{info.count}</b>}
+              </button>
+            ))}
+          </div>
+        )}
+        {menuOpen && (
+          <ReactionMenu
+            myEmoji={typeof reactions[meUid] === 'string' ? reactions[meUid] : undefined}
+            canCopy={m.kind === 'text' && !m.decryptError && !!m.text}
+            flip={menuFlip}
+            onPick={(emoji) => {
+              onCloseMenu();
+              void toggle(emoji).then((ok) => {
+                if (ok) buzz();
+              });
+            }}
+            onCopy={() => {
+              onCloseMenu();
+              if (m.text) onCopyText(m.text);
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}

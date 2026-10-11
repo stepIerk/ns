@@ -5,6 +5,14 @@
         ".read": "auth.uid === 'qSCqveMBppaTLRyGfUv18b6rk0J2' || auth.uid === 'cdlZ4CPKEkY91fvct7mRI52Zdwv1'",
         ".write": "auth.uid === $uid && (auth.uid === 'qSCqveMBppaTLRyGfUv18b6rk0J2' || auth.uid === 'cdlZ4CPKEkY91fvct7mRI52Zdwv1')"
       }
+    },
+    "reactions": {
+      "$msgId": {
+        "$uid": {
+          ".read": "auth.uid === 'qSCqveMBppaTLRyGfUv18b6rk0J2' || auth.uid === 'cdlZ4CPKEkY91fvct7mRI52Zdwv1'",
+          ".write": "auth.uid === $uid && (auth.uid === 'qSCqveMBppaTLRyGfUv18b6rk0J2' || auth.uid === 'cdlZ4CPKEkY91fvct7mRI52Zdwv1') && (!newData.exists() || (newData.isString() && newData.val().length <= 8))"
+        }
+      }
     }
   }
 }

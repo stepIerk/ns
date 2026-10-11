@@ -1,5 +1,12 @@
 export type MessageKind = 'text' | 'photo';
 
+/** Цель ответа: ссылка на родительское сообщение (см. ChatMessage.replyTo). */
+export interface ReplyTarget {
+  id: string;
+  clientMessageId?: string;
+  senderId: string;
+}
+
 export interface ChatMessage {
   id: string; // firestore doc id, или local-... для optimistic
   clientMessageId: string;
@@ -16,6 +23,9 @@ export interface ChatMessage {
   mimeType?: string;
   size?: number;
   iv?: string;
+  // Ответ (цитата): только ссылка на родителя, сниппет резолвится локально
+  // по id (затем по clientMessageId — покрывает pending-родителя после эха).
+  replyTo?: ReplyTarget;
   // статусы: только локальные. read = пир отрендерил (seenTs из RTDB presence).
   status: 'sending' | 'sent' | 'read' | 'error';
   pending?: boolean;
@@ -35,6 +45,10 @@ export interface MessageDoc {
   driveFileId?: string; // Google Drive
   mimeType?: string;
   size?: number;
+  // Ответ: ссылка на родителя (опционально, старые доки без неё валидны).
+  replyToId?: string;
+  replyToSenderId?: string;
+  replyToClientId?: string;
   // receipts за флагом ENABLE_RECEIPTS (v1 не пишем/не читаем)
   deliveredAt?: unknown;
   readAt?: unknown;

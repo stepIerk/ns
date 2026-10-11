@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -8,21 +9,19 @@ import {
 } from 'react';
 import {
   ArrowUp,
-  Check,
-  CheckCheck,
-  Clock,
+  EllipsisVertical,
   Loader2,
   Lock,
   Plus,
-  RefreshCw,
-  Settings,
   WifiOff,
   X,
 } from 'lucide-react';
 import type { PhotoState } from '../hooks/useMedia';
+import type { ReactionMap } from '../hooks/useReactions';
 import type { LocalSettings } from '../lib/settings';
+import MessageBubble from './MessageBubble';
 import SettingsSheet from './SettingsSheet';
-import type { ChatMessage } from '../types';
+import type { ChatMessage, ReplyTarget } from '../types';
 
 /** Презентационный чат: те же компоненты и стили, данные — пропсами.
  * Используют и боевой Chat (хуки), и превью /test (фейковые данные). */
@@ -53,8 +52,8 @@ export interface ChatViewProps {
   onPickWallpaper: (f: File) => void;
   onClearWallpaper: () => void;
   // Действия
-  onSubmitText: (text: string) => Promise<void>;
-  onPickFile: (f: File) => void;
+  onSubmitText: (text: string, opts?: { replyTo?: ReplyTarget }) => Promise<void>;
+  onPickFile: (f: File, opts?: { replyTo?: ReplyTarget }) => void;
   onRetryPhoto: (m: ChatMessage) => void;
   onOpenViewer: (id: string) => void;
   onCloseViewer: () => void;
@@ -72,6 +71,11 @@ export interface ChatViewProps {
   onLogout: () => void;
   onWipeDevice: () => void;
   debugLines: string[];
+  // Ответы/реакции: ключ комнаты для расшифровки цитат вне окна,
+  // в превью — seed реакций + локальный режим без RTDB.
+  roomKey?: CryptoKey;
+  seedReactions?: Record<string, ReactionMap>;
+  reactionsLocalOnly?: boolean;
 }
 
 function isStandalone(): boolean {
@@ -91,10 +95,6 @@ function dayLabel(ts: number): string {
   if (sameDay(d, today)) return 'Сегодня';
   if (sameDay(d, yesterday)) return 'Вчера';
   return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
-}
-
-function timeLabel(ts: number): string {
-  return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
 export default function ChatView(p: ChatViewProps) {
@@ -139,12 +139,29 @@ export default function ChatView(p: ChatViewProps) {
     onLogout,
     onWipeDevice,
     debugLines,
+    roomKey,
+    seedReactions,
+    reactionsLocalOnly,
   } = p;
 
   const [text, setText] = useState('');
   const [localSending, setLocalSending] = useState(false);
   const busy = sending || localSending;
   const [sheetOpen, setSheetOpen] = useState(false);
+  // Ответ черновиком + открытое меню реакций (одно на чат) + тост.
+  const [replyDraft, setReplyDraft] = useState<ReplyTarget | null>(null);
+  const [menuFor, setMenuFor] = useState<{ id: string; flip: boolean } | null>(null);
+  const menuForRef = useRef<{ id: string; flip: boolean } | null>(null);
+  useEffect(() => {
+    menuForRef.current = menuFor;
+  });
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notify = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2200);
+  }, []);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -343,26 +360,31 @@ export default function ChatView(p: ChatViewProps) {
     }
   }, [visible.length]);
 
-  // Escape закрывает шторку.
+  // Escape закрывает шторку и меню реакций.
   useEffect(() => {
-    if (!sheetOpen) return;
+    if (!sheetOpen && !menuFor) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSheetOpen(false);
+      if (e.key === 'Escape') {
+        setSheetOpen(false);
+        setMenuFor(null);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [sheetOpen]);
+  }, [sheetOpen, menuFor]);
 
   const onSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const body = text.trim();
     if (!body || busy) return;
+    const draft = replyDraft;
     setText('');
+    setReplyDraft(null);
     fitInput();
     setTypingActive(false);
     setLocalSending(true);
     try {
-      await onSubmitText(body);
+      await onSubmitText(body, draft ? { replyTo: draft } : undefined);
     } finally {
       setLocalSending(false);
       // Клавиатура остаётся: фокус не отдаём (кнопка не забирает его — см. onPointerDown ниже).
@@ -399,6 +421,117 @@ export default function ChatView(p: ChatViewProps) {
   const standalone = isStandalone();
   const initial = (peerName.trim()[0] ?? '?').toUpperCase();
 
+  // Карта сообщений для резолва цитат: по id и по clientMessageId
+  // (покрывает pending-родителя: после эха id сменится, clientMessageId — нет).
+  const visibleMap = useMemo(() => {
+    const map = new Map<string, ChatMessage>();
+    for (const m of visible) {
+      map.set(m.id, m);
+      map.set(`cm:${m.clientMessageId}`, m);
+    }
+    return map;
+  }, [visible]);
+
+  // Сниппет черновика ответа (синхронно из окна; фото/вне окна — подпись).
+  const draftParent = replyDraft
+    ? (visibleMap.get(replyDraft.id) ??
+      (replyDraft.clientMessageId
+        ? visibleMap.get(`cm:${replyDraft.clientMessageId}`)
+        : undefined))
+    : undefined;
+  const draftSnippet = !replyDraft
+    ? ''
+    : draftParent
+      ? draftParent.kind === 'photo'
+        ? '📷 Фото'
+        : draftParent.decryptError
+          ? 'Сообщение'
+          : (draftParent.text ?? 'Сообщение')
+      : 'Сообщение';
+
+  // Прыжок к цитируемому: скролл + flash; нет в окне — тянем историю (кап 3 стр.).
+  const jumpTo = useCallback(
+    async (t: ReplyTarget) => {
+      const list = listRef.current;
+      if (!list) return;
+      const find = () =>
+        (list.querySelector(`[data-mid="${t.id}"]`) ??
+          (t.clientMessageId
+            ? list.querySelector(`[data-cmid="${t.clientMessageId}"]`)
+            : null)) as HTMLElement | null;
+      let el = find();
+      for (let i = 0; i < 3 && !el; i += 1) {
+        const added = await onLoadOlder().catch(() => 0);
+        if (added <= 0) break;
+        el = find();
+      }
+      if (!el) {
+        notify('Сообщение уже выгружено из истории');
+        return;
+      }
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 1300);
+    },
+    [onLoadOlder, notify],
+  );
+
+  const handleReply = useCallback(
+    (m: ChatMessage) => {
+      if (m.pending) {
+        notify('Сообщение ещё отправляется — ответь чуть позже');
+        return;
+      }
+      setReplyDraft({ id: m.id, clientMessageId: m.clientMessageId, senderId: m.senderId });
+      inputRef.current?.focus({ preventScroll: true });
+    },
+    [notify],
+  );
+
+  const copyText = useCallback(
+    async (s: string) => {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(s);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = s;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        notify('Скопировано');
+      } catch {
+        notify('Не удалось скопировать');
+      }
+    },
+    [notify],
+  );
+
+  // Меню закрывается скроллом ленты и кликом мимо поповера (без бэкдропа,
+  // чтобы не блокировать ленту; клики внутри поповера — stopPropagation).
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const onScroll = () => {
+      if (menuForRef.current) setMenuFor(null);
+    };
+    list.addEventListener('scroll', onScroll, { passive: true });
+    return () => list.removeEventListener('scroll', onScroll);
+  }, []);
+  useEffect(() => {
+    if (!menuFor) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!(e.target instanceof Element)) return;
+      if (!e.target.closest('.react-popover')) setMenuFor(null);
+    };
+    document.addEventListener('click', onDocClick, true);
+    return () => document.removeEventListener('click', onDocClick, true);
+  }, [menuFor]);
+
   // Кастомные цвета пузырей поверх темы (null = цвет темы).
   const themeVars = {
     ...(settings.bubbleColorMine ? { '--bubble-mine': settings.bubbleColorMine } : null),
@@ -406,9 +539,6 @@ export default function ChatView(p: ChatViewProps) {
     ...(settings.bubbleColorMine ? { '--glass-mine': settings.bubbleColorMine } : null),
     ...(settings.bubbleColorTheirs ? { '--glass-theirs': settings.bubbleColorTheirs } : null),
   } as CSSProperties;
-
-  // iOS: кнопка не должна забирать фокус у input, иначе клавиатура схлопнется.
-  const keepFocus = { onPointerDown: (e: React.PointerEvent) => e.preventDefault() };
 
   return (
     <div className="chat" ref={chatRef} style={themeVars}>
@@ -438,7 +568,7 @@ export default function ChatView(p: ChatViewProps) {
             title="Настройки"
             aria-label="Настройки"
           >
-            <Settings size={19} />
+            <EllipsisVertical size={19} />
           </button>
         </div>
       </header>
@@ -464,71 +594,33 @@ export default function ChatView(p: ChatViewProps) {
           return (
             <div key={m.id} style={{ display: 'contents' }}>
               {showDay && <div className="day-divider">{day}</div>}
-              <div className={`msg${mine ? ' mine' : ' theirs'}${grouped ? ' grouped' : ''}`}>
-                {m.kind === 'text' ? (
-                  <div className={`bubble${glass ? ' glass' : ''}`}>
-                    {m.decryptError ? <i>Не удалось расшифровать</i> : m.text}
-                    <div className="meta">
-                      {timeLabel(m.createdAtMs)}
-                      {m.pending ? (
-                        m.status === 'error' ? (
-                          <button
-                            {...keepFocus}
-                            onClick={() => {
-                              const draft = onRestoreDraft(m.clientMessageId);
-                              if (draft) setText(draft);
-                            }}
-                          >
-                            ошибка · вернуть в ввод
-                          </button>
-                        ) : (
-                          <Clock size={12} />
-                        )
-                      ) : mine ? (
-                        m.status === 'read' ? (
-                          <CheckCheck size={13} className="tick-read" />
-                        ) : (
-                          <Check size={13} />
-                        )
-                      ) : null}
-                    </div>
-                  </div>
-                ) : (
-                  <div className={`bubble bubble-photo${glass ? ' glass' : ''}`}>
-                    {(() => {
-                      const st = photos[m.id];
-                      if (!st || st.status === 'loading') return <div className="photo-loading" />;
-                      if (st.status === 'error') {
-                        return (
-                          <div className="photo-error">
-                            Не удалось загрузить фото
-                            <button onClick={() => onRetryPhoto(m)}>
-                              <RefreshCw size={13} /> Повторить
-                            </button>
-                          </div>
-                        );
-                      }
-                      return (
-                        <img
-                          src={st.url}
-                          alt="фото"
-                          loading="lazy"
-                          onClick={() => onOpenViewer(m.id)}
-                        />
-                      );
-                    })()}
-                    <div className="meta">
-                      {timeLabel(m.createdAtMs)}
-                      {mine &&
-                        (m.status === 'read' ? (
-                          <CheckCheck size={13} className="tick-read" />
-                        ) : (
-                          <Check size={13} />
-                        ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <MessageBubble
+                m={m}
+                mine={mine}
+                grouped={grouped}
+                glass={glass}
+                meUid={meUid}
+                peerName={peerName}
+                roomKey={roomKey}
+                photos={photos}
+                menuOpen={menuFor?.id === m.id}
+                menuFlip={menuFor?.id === m.id ? menuFor.flip : false}
+                onOpenMenu={(flip) => setMenuFor({ id: m.id, flip })}
+                onCloseMenu={() => setMenuFor((cur) => (cur?.id === m.id ? null : cur))}
+                onReply={handleReply}
+                onJump={(t) => void jumpTo(t)}
+                onErrorTap={(msg) => {
+                  const draft = onRestoreDraft(msg.clientMessageId);
+                  if (draft) setText(draft);
+                }}
+                onRetryPhoto={onRetryPhoto}
+                onOpenViewer={onOpenViewer}
+                onCopyText={(s) => void copyText(s)}
+                notify={notify}
+                visibleMap={visibleMap}
+                seedReactions={seedReactions?.[m.id]}
+                reactionsLocalOnly={reactionsLocalOnly}
+              />
             </div>
           );
         })}
@@ -555,9 +647,32 @@ export default function ChatView(p: ChatViewProps) {
           onChange={(e) => {
             const f = e.target.files?.[0];
             e.target.value = '';
-            if (f) onPickFile(f);
+            if (f) {
+              const draft = replyDraft;
+              setReplyDraft(null);
+              onPickFile(f, draft ? { replyTo: draft } : undefined);
+            }
           }}
         />
+        {replyDraft && (
+          <div className="reply-draft">
+            <span className="reply-draft-bar" />
+            <span className="reply-draft-text">
+              <strong>{replyDraft.senderId === meUid ? 'Вы' : peerName}</strong>
+              <span>{draftSnippet}</span>
+            </span>
+            <button
+              type="button"
+              className="icon-btn"
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => setReplyDraft(null)}
+              title="Отменить ответ"
+              aria-label="Отменить ответ"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        )}
         <button
           type="button"
           className="icon-btn"
@@ -600,6 +715,12 @@ export default function ChatView(p: ChatViewProps) {
           {busy ? <Loader2 size={18} className="spin" /> : <ArrowUp size={18} />}
         </button>
       </form>
+
+      {toast && (
+        <div className="toast" role="status">
+          {toast}
+        </div>
+      )}
 
       {viewer && (
         <div className="modal viewer" onClick={onCloseViewer}>

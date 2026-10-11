@@ -5,7 +5,7 @@ import { b64ToBytes, bufToB64, decryptBytes, encryptBytes } from '../lib/crypto'
 import { prepareImage } from '../lib/image';
 import { authedPost } from '../lib/api';
 import { blobGet, blobPut } from '../lib/db';
-import type { ChatMessage, MessageDoc } from '../types';
+import type { ChatMessage, MessageDoc, ReplyTarget } from '../types';
 
 // Медиа-флоу:
 // prepareImage → encryptBytes → upload-init → N × upload-chunk (base64, 1МБ)
@@ -179,7 +179,7 @@ export function useMedia(
   );
 
   const sendPhoto = useCallback(
-    async (file: File) => {
+    async (file: File, opts?: { replyTo?: ReplyTarget }) => {
       setError(null);
       if (!file.type.startsWith('image/')) {
         setError('Пока поддерживаются только изображения');
@@ -226,6 +226,7 @@ export function useMedia(
             createdAt: serverTimestamp(),
           }),
         );
+        const replyTo = opts?.replyTo;
         const ref = await withTimeout(
           addDoc(collection(fb.db, 'rooms', 'main', 'messages'), {
             clientMessageId,
@@ -238,6 +239,15 @@ export function useMedia(
             mimeType: mime,
             size: cipher.byteLength,
             iv: ivB64,
+            ...(replyTo
+              ? {
+                  replyToId: replyTo.id,
+                  replyToSenderId: replyTo.senderId,
+                  ...(replyTo.clientMessageId
+                    ? { replyToClientId: replyTo.clientMessageId }
+                    : null),
+                }
+              : null),
           } satisfies MessageDoc),
         );
         notifyMessage(ref.id);

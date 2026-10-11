@@ -229,11 +229,11 @@ export default function Chat({
       onClearAvatar={clearAvatar}
       onPickWallpaper={pickWallpaper}
       onClearWallpaper={clearWallpaper}
-      onSubmitText={async (body) => {
-        await sendText(body);
+      onSubmitText={async (body, opts) => {
+        await sendText(body, opts);
       }}
-      onPickFile={(f) => {
-        void media.sendPhoto(f);
+      onPickFile={(f, opts) => {
+        void media.sendPhoto(f, opts);
       }}
       onRetryPhoto={(m) => media.retryPhoto(m)}
       onOpenViewer={(id) => media.openViewer(id)}
@@ -251,6 +251,7 @@ export default function Chat({
       onLogout={onLogout}
       onWipeDevice={onWipeDevice}
       debugLines={debugLines}
+      roomKey={roomKey}
     />
   );
 }

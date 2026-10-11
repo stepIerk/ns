@@ -21,7 +21,7 @@ import {
   msgTrim,
   type StoredMsg,
 } from '../lib/db';
-import type { ChatMessage, MessageDoc } from '../types';
+import type { ChatMessage, MessageDoc, ReplyTarget } from '../types';
 
 // v1: только текстовые сообщения, один долгоживущий onSnapshot.
 // Внутри листенера НИКАКИХ записей — иначе loop "snapshot -> write -> snapshot"
@@ -63,6 +63,19 @@ function docToRecord(id: string, v: MessageDoc): StoredMsg {
     driveFileId: v.driveFileId,
     mimeType: v.mimeType,
     size: v.size,
+    replyToId: v.replyToId,
+    replyToSenderId: v.replyToSenderId,
+    replyToClientId: v.replyToClientId,
+  };
+}
+
+/** Плоская запись → ссылка цитаты (если есть родитель). */
+function recordReplyTo(r: StoredMsg): ChatMessage['replyTo'] {
+  if (!r.replyToId || !r.replyToSenderId) return undefined;
+  return {
+    id: r.replyToId,
+    clientMessageId: r.replyToClientId,
+    senderId: r.replyToSenderId,
   };
 }
 
@@ -91,6 +104,7 @@ async function recordsToChat(
         iv: r.iv,
         text: '[фото — нажмите открыть]',
         status: st,
+        replyTo: recordReplyTo(r),
       });
       continue;
     }
@@ -101,6 +115,7 @@ async function recordsToChat(
       createdAtMs: r.ts,
       kind: 'text',
       status: st,
+      replyTo: recordReplyTo(r),
     };
     try {
       if (r.ciphertext && r.iv) base.text = await decryptText(key, r.iv, r.ciphertext);
@@ -318,11 +333,12 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
   }, []);
 
   const sendText = useCallback(
-    async (body: string): Promise<void> => {
+    async (body: string, opts?: { replyTo?: ReplyTarget }): Promise<void> => {
       const text = body.trim();
       if (!text) return;
       setError(null);
       const clientMessageId = crypto.randomUUID();
+      const replyTo = opts?.replyTo;
       const optimistic: ChatMessage = {
         id: `local-${clientMessageId}`,
         clientMessageId,
@@ -332,6 +348,7 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
         text,
         status: 'sending',
         pending: true,
+        replyTo,
       };
       setPending((p) => [...p, optimistic]);
       try {
@@ -347,6 +364,15 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
             kind: 'text',
             ciphertext: ctB64,
             iv: ivB64,
+            ...(replyTo
+              ? {
+                  replyToId: replyTo.id,
+                  replyToSenderId: replyTo.senderId,
+                  ...(replyTo.clientMessageId
+                    ? { replyToClientId: replyTo.clientMessageId }
+                    : null),
+                }
+              : null),
           } satisfies MessageDoc),
         );
         // pending уберётся эхом из onSnapshot (см. эффект выше),

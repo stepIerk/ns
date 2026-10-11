@@ -21,7 +21,14 @@ export interface StoredMsg {
   driveFileId?: string;
   mimeType?: string;
   size?: number;
+  // Ответ: ссылка на родителя (значения schemaless — миграции не надо).
+  replyToId?: string;
+  replyToSenderId?: string;
+  replyToClientId?: string;
 }
+
+/** Кэш реакций: msgId → { uid: emoji }. Зеркало RTDB для мгновенного старта. */
+export type StoredReactions = Record<string, string>;
 
 export interface CachedBlob {
   blob: Blob;
@@ -32,8 +39,10 @@ export interface CachedBlob {
 const MSG_DB = 'ns-msgs-v1';
 const MEDIA_DB = 'ns-media-v1';
 const MSG_STORE = 'messages';
+const REACT_STORE = 'reactions';
 const BLOB_STORE = 'blobs';
 const META_STORE = 'meta';
+const MSG_VERSION = 2; // v2: + стор reactions (сообщения не трогаем)
 const MSG_TS_INDEX = 'by-ts'; // compound ['ts','id'] — чистые курсоры без дублей
 const BLOB_STORED_INDEX = 'by-stored'; // storedAt — FIFO-вытеснение
 
@@ -159,10 +168,18 @@ let mediaDb: IDBDatabase | null = null;
 
 async function getMsgDb(): Promise<IDBDatabase> {
   if (msgDb) return msgDb;
-  msgDb = await openDb(MSG_DB, 1, (db) => {
-    const s = db.createObjectStore(MSG_STORE, { keyPath: 'id' });
-    s.createIndex(MSG_TS_INDEX, ['ts', 'id'], { unique: false });
-    db.createObjectStore(META_STORE);
+  msgDb = await openDb(MSG_DB, MSG_VERSION, (db) => {
+    if (!db.objectStoreNames.contains(MSG_STORE)) {
+      const s = db.createObjectStore(MSG_STORE, { keyPath: 'id' });
+      s.createIndex(MSG_TS_INDEX, ['ts', 'id'], { unique: false });
+    }
+    if (!db.objectStoreNames.contains(META_STORE)) {
+      db.createObjectStore(META_STORE);
+    }
+    // v2: кэш реакций (старые базы мигрируют сюда без потери сообщений).
+    if (!db.objectStoreNames.contains(REACT_STORE)) {
+      db.createObjectStore(REACT_STORE);
+    }
   });
   return msgDb;
 }
@@ -212,6 +229,33 @@ export async function msgOlderThan(ts: number, id: string, n: number): Promise<S
   return rows.reverse();
 }
 
+/** Одна запись по id (для резолва цитат вне окна рендера). */
+export async function msgById(id: string): Promise<StoredMsg | null> {
+  const db = await getMsgDb();
+  const v = await tx(db, [MSG_STORE], 'readonly', (t) =>
+    req(t.objectStore(MSG_STORE).get(id)),
+  );
+  return (v as StoredMsg | undefined) ?? null;
+}
+
+// ---------- Реакции (кэш зеркала RTDB) ----------
+
+export async function reactGet(msgId: string): Promise<StoredReactions | null> {
+  const db = await getMsgDb();
+  const v = await tx(db, [REACT_STORE], 'readonly', (t) =>
+    req(t.objectStore(REACT_STORE).get(msgId)),
+  );
+  const r = v as StoredReactions | undefined;
+  return r && typeof r === 'object' ? r : null;
+}
+
+export async function reactPut(msgId: string, map: StoredReactions): Promise<void> {
+  const db = await getMsgDb();
+  await tx(db, [REACT_STORE], 'readwrite', (t) => {
+    if (Object.keys(map).length === 0) t.objectStore(REACT_STORE).delete(msgId);
+    else t.objectStore(REACT_STORE).put(map, msgId);
+  });
+}
 /** FIFO: режем старейшие, пока count <= cap. Возвращает сколько удалили. */
 export async function msgTrim(cap: number = MSG_CAP): Promise<number> {
   const db = await getMsgDb();

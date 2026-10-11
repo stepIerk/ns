@@ -195,7 +195,7 @@ button { font-family: inherit; }
   gap: 10px;
   left: 12px;
   right: 12px;
-  padding: 8px 8px 8px 12px;
+  padding: 6px 6px 6px 6px;
   border: 1px solid var(--border);
   border-radius: 999px;
   box-shadow: var(--shadow);
@@ -709,4 +709,218 @@ input[type='color'].colorwell {
   background-position: center;
   background-color: var(--surface-2);
   margin-top: 8px;
+}
+
+/* ---------- Ответы и реакции (стиль Telegram) ---------- */
+
+.msg .bubble {
+  -webkit-touch-callout: none; /* iOS: лонг-пресс — наше меню, а не системный callout */
+}
+
+/* Подсветка прыжка к цитируемому сообщению. */
+.msg.flash .bubble { animation: quote-flash 1.2s ease-out; }
+@keyframes quote-flash {
+  0%, 100% { box-shadow: none; }
+  30% { box-shadow: 0 0 0 3px var(--ok); }
+}
+
+/* Свайп-ответ: обёртка тянется за пальцем, справа проявляется иконка. */
+.swipe-wrap {
+  position: relative;
+  max-width: min(78%, 420px);
+  touch-action: pan-y; /* вертикаль — скролл ленты, горизонталь — нам */
+}
+.swipe-hint {
+  position: absolute;
+  top: 0; bottom: 0; right: 0;
+  width: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+.swipe-wrap:active .swipe-hint { opacity: 0.9; }
+.swipe-shift { will-change: transform; }
+.swipe-shift.snap { transition: transform 0.25s ease-out; }
+/* Ширину ограничивает .swipe-wrap — пузырь внутри на всю ширину сдвига. */
+.swipe-shift .bubble { max-width: none; }
+
+/* Цитата внутри пузыря (тап — прыжок к родителю). */
+.quote {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  margin: 0 0 5px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(128, 128, 128, 0.18);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.quote-bar {
+  width: 3px;
+  align-self: stretch;
+  flex-shrink: 0;
+  border-radius: 3px;
+  background: currentColor;
+  opacity: 0.55;
+}
+.quote-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.quote-body strong { font-size: 12.5px; }
+.quote-body span {
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 230px;
+}
+
+/* Пилл реакций под пузырём (перекрытие низа, как в TG). */
+.swipe-wrap:has(.react-pill) { margin-bottom: 12px; }
+.react-pill {
+  position: absolute;
+  bottom: -12px;
+  display: flex;
+  gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 5px;
+  box-shadow: var(--shadow);
+  z-index: 2;
+}
+.mine .react-pill { right: 4px; }
+.theirs .react-pill { left: 4px; }
+.react-pill-item {
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.react-pill-item.active { background: var(--surface-2); outline: 1px solid var(--border); }
+.react-pill-item b { font-size: 11px; font-weight: 700; }
+
+/* Поповер меню: палитра + «Скопировать». */
+.react-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  z-index: 15;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+}
+.mine .react-popover { right: 0; }
+.theirs .react-popover { left: 0; }
+.react-popover.below { top: calc(100% + 6px); bottom: auto; }
+.react-row { display: flex; gap: 2px; }
+.react-emoji {
+  font-size: 24px;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  border-radius: 12px;
+  padding: 4px 6px;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+.react-emoji:active { transform: scale(1.25); }
+.react-emoji.active { background: var(--surface-2); }
+.react-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 10px 10px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+/* Черновик ответа над полем ввода (внутри композера — высота подхватится замером). */
+.composer { flex-wrap: wrap; }
+.reply-draft {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  background: var(--surface-2);
+  border-radius: 14px;
+  padding: 6px 6px 6px 10px;
+  margin-bottom: 3px;
+}
+.reply-draft-bar {
+  width: 3px;
+  align-self: stretch;
+  border-radius: 3px;
+  background: var(--text);
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+.reply-draft-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.reply-draft-text strong { font-size: 12px; }
+.reply-draft-text > span {
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reply-draft .icon-btn { flex-shrink: 0; }
+
+/* Тост (копирование, ошибки реакций, прыжки). */
+.toast {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--bar-bottom, 64px) + 30px);
+  max-width: 92%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  z-index: 30;
+  animation: toast-in 0.2s ease-out;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 6px); }
 }
