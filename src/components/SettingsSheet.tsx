@@ -75,6 +75,22 @@ export default function SettingsSheet(p: Props) {
               </div>
             </div>
             <div className="set-row">
+              <div
+                className="avatar"
+                style={
+                  p.avatarUrl
+                    ? { width: 52, height: 52, flexShrink: 0 }
+                    : { width: 52, height: 52, flexShrink: 0, background: s.avatarColor }
+                }
+              >
+                {p.avatarUrl ? (
+                  <img src={p.avatarUrl} alt="Аватар" />
+                ) : (
+                  <span style={{ color: '#fff', fontSize: 20 }}>
+                    {(s.peerName.trim()[0] ?? '?').toUpperCase()}
+                  </span>
+                )}
+              </div>
               <div className="grow">
                 <div className="sub">Иконка</div>
                 <div className="swatches" style={{ marginTop: 8 }}>

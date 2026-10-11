@@ -161,7 +161,7 @@ button { font-family: inherit; }
   color: var(--text-2);
   background: transparent;
   border: none;
-  border-radius: 10px;
+  border-radius: 999px;
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -182,18 +182,19 @@ button { font-family: inherit; }
 
 /* ---------- Чат ---------- */
 
-.chat { display: flex; flex-direction: column; height: 100%; }
+.chat { display: flex; flex-direction: column; height: 100%; min-height: 100dvh; }
 
 .topbar {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: calc(env(safe-area-inset-top) + 8px) 12px 8px;
+  left: 12px;
+  right: 12px;
   padding: 8px 8px 8px 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
   box-shadow: var(--shadow);
-  position: sticky;
+  position: absolute;
   top: calc(env(safe-area-inset-top) + 8px);
   z-index: 5;
 }
@@ -223,24 +224,35 @@ button { font-family: inherit; }
 .top-actions { display: flex; gap: 2px; align-items: center; }
 
 .notice {
-  position: relative;
-  z-index: 1;
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 6px);
+  z-index: 4;
   display: flex; align-items: center; justify-content: center; gap: 8px;
-  margin: 0 12px 8px;
   padding: 8px 12px;
   border-radius: 14px;
   font-size: 13px;
   background: var(--warn-bg); color: var(--warn-text);
 }
+.chat-error {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 6px);
+  z-index: 4;
+}
 
 /* ---------- Лента ---------- */
 
 .list {
-  flex: 1;
+  position: absolute;
+  inset: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scroll-padding-bottom: calc(var(--kb-inset, 0px) + 12px);
-  padding: 14px 12px 8px;
+  scroll-padding-top: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 12px);
+  scroll-padding-bottom: calc(var(--bar-bottom, 64px) + 24px + var(--kb-inset, 0px));
+  padding: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 8px) 12px calc(var(--bar-bottom, 64px) + 18px);
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -364,12 +376,16 @@ button { font-family: inherit; }
   display: flex;
   align-items: center;
   gap: 4px;
-  margin: 8px 12px calc(10px + env(safe-area-inset-bottom) + max(0px, calc(var(--kb-inset, 0px) - env(safe-area-inset-bottom, 0px))));
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(10px + env(safe-area-inset-bottom) + max(0px, calc(var(--kb-inset, 0px) - env(safe-area-inset-bottom, 0px))));
   padding: 6px 6px 6px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
   box-shadow: var(--shadow);
-  transition: margin-bottom 0.22s ease-out;
+  transition: bottom 0.22s ease-out;
+  z-index: 5;
 }
 
 .composer-input {
@@ -444,9 +460,7 @@ button { font-family: inherit; }
 
 /* ---------- Матовое стекло ---------- */
 
-.composer {
-  position: relative;
-}
+/* (.composer уже absolute — это и есть позиционированный предок для блика ::before) */
 .topbar,
 .composer {
   background: color-mix(in srgb, var(--bg) 60%, transparent);
@@ -497,16 +511,8 @@ button { font-family: inherit; }
   background-position: center;
   pointer-events: none;
 }
-.topbar,
-.list,
-.composer,
-.notice {
-  z-index: 1;
-}
-.list,
-.composer,
-.notice {
-  position: relative;
+.composer {
+  z-index: 5;
 }
 
 /* ---------- Аватар собеседника ---------- */
@@ -523,25 +529,23 @@ button { font-family: inherit; }
 .sheet-backdrop {
   position: fixed;
   inset: 0;
-  background: var(--overlay);
-  opacity: 0;
+  background: transparent;
   pointer-events: none;
-  transition: opacity 0.25s ease;
   z-index: 30;
 }
-.sheet-backdrop.open { opacity: 1; pointer-events: auto; }
+.sheet-backdrop.open { pointer-events: auto; }
 
 .sheet {
   position: fixed;
   top: 0; right: 0;
   height: 100dvh;
-  width: min(400px, 100%);
-  background: var(--surface);
-  border-left: 1px solid var(--border);
-  box-shadow: var(--shadow);
+  width: 100%;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
   z-index: 31;
   transform: translateX(102%);
-  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0.24, 1);
+  transition: transform 0.32s cubic-bezier(0.32, 0.72, 0.24, 1);
   display: flex;
   flex-direction: column;
 }
@@ -553,23 +557,37 @@ button { font-family: inherit; }
   gap: 10px;
   padding: 14px 16px;
   padding-top: calc(14px + env(safe-area-inset-top));
-  border-bottom: 1px solid var(--border);
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
 }
-.sheet-head strong { flex: 1; font-size: 17px; font-weight: 650; }
+.sheet-head strong { flex: 1; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
 
 .sheet-body {
   flex: 1;
   overflow-y: auto;
   padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
 }
 
-.set-group { margin: 14px 0 4px; }
+.set-group {
+  margin: 14px 0;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  padding: 6px 16px 12px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
 .set-group > h4 {
-  margin: 0 0 8px;
+  margin: 10px 0 4px;
   font-size: 12.5px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
   color: var(--text-2);
 }
 .set-row {
