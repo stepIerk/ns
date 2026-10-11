@@ -3,6 +3,7 @@ import { Moon, Sun, Wifi, WifiOff } from 'lucide-react';
 import ChatView from '../components/ChatView';
 import type { PhotoState } from '../hooks/useMedia';
 import type { ReactionMap } from '../hooks/useReactions';
+import { computeVoiceWave } from '../lib/voice';
 import { useApplyTheme } from '../lib/theme';
 import { useLocalSettings } from '../lib/settings';
 import type { ChatMessage } from '../types';
@@ -230,6 +231,34 @@ export default function Preview() {
     previewPhotoUrls.set(id, url);
     setPhotoTick((x) => x + 1);
   };
+
+  // Голосовое в превью: настоящий записанный blob → сразу url + waveform.
+  const sendVoicePreview = (blob: Blob, mime: string, recordedMs: number) => {
+    const url = URL.createObjectURL(blob);
+    const id = `pv-local-${Date.now()}`;
+    previewPhotoUrls.set(id, url);
+    setPhotoTick((x) => x + 1);
+    void computeVoiceWave(blob).then(({ waveform, durationMs }) => {
+      setExtra((prev) => [
+        ...prev,
+        {
+          id,
+          clientMessageId: id,
+          senderId: ME,
+          createdAtMs: Date.now(),
+          kind: 'voice',
+          mediaId: `m-${id}`,
+          driveFileId: `d-${id}`,
+          mimeType: mime,
+          size: blob.size,
+          iv: 'iv',
+          durationMs: durationMs > 0 ? durationMs : recordedMs,
+          waveform,
+          status: 'sent',
+        },
+      ]);
+    });
+  };
   const photosWithLocal = useMemo(() => {
     const out = { ...photos };
     for (const [id, url] of previewPhotoUrls) {
@@ -316,6 +345,7 @@ export default function Preview() {
         onClearWallpaper={() => {}}
         onSubmitText={submitText}
         onPickFile={pickFile}
+        onSendVoice={sendVoicePreview}
         onRetryPhoto={() => {}}
         onOpenViewer={(id) => setViewerId(id)}
         onCloseViewer={() => setViewerId(null)}

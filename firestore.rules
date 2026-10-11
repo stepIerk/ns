@@ -20,7 +20,7 @@ service cloud.firestore {
         && request.resource.data.senderId == request.auth.uid
         && request.resource.data.clientMessageId is string
         && request.resource.data.clientTs is number
-        && request.resource.data.kind in ['text', 'photo']
+        && request.resource.data.kind in ['text', 'photo', 'voice']
         && (!('replyToId' in request.resource.data) || request.resource.data.replyToId is string)
         && (!('replyToSenderId' in request.resource.data) || request.resource.data.replyToSenderId is string)
         && (!('replyToClientId' in request.resource.data) || request.resource.data.replyToClientId is string);

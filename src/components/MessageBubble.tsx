@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, CheckCheck, Clock, Copy, RefreshCw, Reply } from 'lucide-react';
+import {
+  Check,
+  CheckCheck,
+  Clock,
+  Copy,
+  Loader2,
+  Pause,
+  Play,
+  RefreshCw,
+  Reply,
+} from 'lucide-react';
 import type { PhotoState } from '../hooks/useMedia';
 import {
   QUICK_REACTION,
@@ -9,6 +19,8 @@ import {
 } from '../hooks/useReactions';
 import { decryptText } from '../lib/crypto';
 import { msgById } from '../lib/db';
+import { VOICE_BARS, formatVoiceTime } from '../lib/voice';
+import { getActiveVoiceId, setActiveVoiceId, subscribeVoiceBus } from '../lib/voiceBus';
 import type { ChatMessage, ReplyTarget } from '../types';
 
 function timeLabel(ts: number): string {
@@ -57,9 +69,11 @@ function ReplyQuote({ replyTo, meUid, peerName, visibleMap, roomKey, onJump }: Q
       text:
         parent.kind === 'photo'
           ? '📷 Фото'
-          : parent.decryptError
-            ? 'Сообщение'
-            : truncate(parent.text ?? 'Сообщение', 90),
+          : parent.kind === 'voice'
+            ? '🎤 Голосовое'
+            : parent.decryptError
+              ? 'Сообщение'
+              : truncate(parent.text ?? 'Сообщение', 90),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replyTo.id, replyTo.clientMessageId, visibleMap, meUid, peerName]);
@@ -79,6 +93,10 @@ function ReplyQuote({ replyTo, meUid, peerName, visibleMap, roomKey, onJump }: Q
         }
         if (rec.kind === 'photo') {
           setRemote({ name: nameOf(rec.senderId), text: '📷 Фото' });
+          return;
+        }
+        if (rec.kind === 'voice') {
+          setRemote({ name: nameOf(rec.senderId), text: '🎤 Голосовое' });
           return;
         }
         try {
@@ -160,6 +178,185 @@ function ReactionMenu({ myEmoji, canCopy, flip, onPick, onCopy }: MenuProps) {
           <Copy size={14} /> Скопировать
         </button>
       )}
+    </div>
+  );
+}
+
+// ---------- Голосовое: плеер ----------
+
+const VOICE_FALLBACK_WAVE: number[] = new Array<number>(VOICE_BARS).fill(0.3);
+
+function durOf(a: HTMLAudioElement | null, metaMs: number): number {
+  const d = a?.duration;
+  if (typeof d === 'number' && Number.isFinite(d) && d > 0) return d;
+  return metaMs > 0 ? metaMs / 1000 : 0;
+}
+
+interface VoicePlayerProps {
+  m: ChatMessage;
+  url: string | null;
+  loading: boolean;
+  loadError: boolean;
+  onRetry: () => void;
+}
+
+function VoicePlayer({ m, url, loading, loadError, onRetry }: VoicePlayerProps) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const totalMs = m.durationMs && m.durationMs > 0 ? m.durationMs : 0;
+  const bars = m.waveform && m.waveform.length >= 8 ? m.waveform : VOICE_FALLBACK_WAVE;
+
+  // Эксклюзив: заиграл другой пузырь — встаём на паузу.
+  useEffect(
+    () =>
+      subscribeVoiceBus(() => {
+        if (getActiveVoiceId() !== m.id) {
+          try {
+            audioRef.current?.pause();
+          } catch {
+            // ignore
+          }
+          setPlaying(false);
+        }
+      }),
+    [m.id],
+  );
+
+  useEffect(
+    () => () => {
+      const a = audioRef.current;
+      audioRef.current = null;
+      if (a) {
+        try {
+          a.pause();
+          a.removeAttribute('src');
+        } catch {
+          // ignore
+        }
+      }
+      if (getActiveVoiceId() === m.id) setActiveVoiceId(null);
+    },
+    [m.id],
+  );
+
+  const toggle = () => {
+    if (!url || loading || loadError) return;
+    if (!audioRef.current) {
+      const a = new Audio();
+      a.preload = 'auto';
+      a.src = url;
+      a.ontimeupdate = () => {
+        setProgress(Math.min(1, a.currentTime / Math.max(0.01, durOf(a, totalMs))));
+      };
+      a.onended = () => {
+        setPlaying(false);
+        setProgress(0);
+        if (getActiveVoiceId() === m.id) setActiveVoiceId(null);
+      };
+      audioRef.current = a;
+    }
+    const a = audioRef.current;
+    if (playing) {
+      try {
+        a.pause();
+      } catch {
+        // ignore
+      }
+      setPlaying(false);
+      if (getActiveVoiceId() === m.id) setActiveVoiceId(null);
+    } else {
+      // play() строго в жесте (иначе iOS не даст звук) — toggle вызывается из onClick.
+      if (a.ended) {
+        try {
+          a.currentTime = 0;
+        } catch {
+          // ignore
+        }
+        setProgress(0);
+      }
+      setActiveVoiceId(m.id);
+      a.play().then(
+        () => setPlaying(true),
+        () => {
+          setPlaying(false);
+          if (getActiveVoiceId() === m.id) setActiveVoiceId(null);
+        },
+      );
+    }
+  };
+
+  const seekFrac = (frac: number) => {
+    const a = audioRef.current;
+    if (!a) return;
+    const base = durOf(a, totalMs);
+    if (base <= 0) return;
+    const t = Math.min(0.999, Math.max(0, frac)) * base;
+    try {
+      a.currentTime = t;
+    } catch {
+      // ignore
+    }
+    setProgress(t / base);
+  };
+
+  if (loadError) {
+    return (
+      <div className="photo-error">
+        Не удалось загрузить голосовое
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onRetry();
+          }}
+        >
+          <RefreshCw size={13} /> Повторить
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="voice-row">
+      <button
+        className="voice-play"
+        onPointerDown={(e) => e.preventDefault()}
+        onClick={(e) => {
+          e.stopPropagation();
+          toggle();
+        }}
+        disabled={!url}
+        aria-label={playing ? 'Пауза' : 'Слушать'}
+      >
+        {loading || !url ? (
+          <Loader2 size={17} className="spin" />
+        ) : playing ? (
+          <Pause size={17} />
+        ) : (
+          <Play size={17} />
+        )}
+      </button>
+      <div
+        className="voice-bars"
+        onClick={(e) => {
+          e.stopPropagation();
+          const r = e.currentTarget.getBoundingClientRect();
+          seekFrac((e.clientX - r.left) / Math.max(1, r.width));
+          // Тап по волне и мотает, и стартует (как в TG).
+          if (!playing && url) toggle();
+        }}
+      >
+        {bars.map((b, i) => (
+          <span
+            key={i}
+            className={i / bars.length <= progress ? 'on' : ''}
+            style={{ height: `${Math.round(20 + Math.min(1, Math.max(0, b)) * 80)}%` }}
+          />
+        ))}
+      </div>
+      <span className="voice-time">
+        {playing ? formatVoiceTime(progress * totalMs) : formatVoiceTime(totalMs)}
+      </span>
     </div>
   );
 }
@@ -304,8 +501,8 @@ export default function MessageBubble(props: MessageBubbleProps) {
     setOffset(0);
   };
 
-  // Тап: текст — меню, дабл-тап — быстрый ❤️. Тапы по картинке не доходят
-  // (stopPropagation в img — там viewer), лонг-пресс фото — меню.
+  // Тап: текст и голосовое — меню, дабл-тап — быстрый ❤️. Тапы по картинке
+  // и кнопкам плеера не доходят (stopPropagation), лонг-пресс фото — меню.
   const onBubbleClick = () => {
     if (suppressClickRef.current) {
       suppressClickRef.current = false;
@@ -322,7 +519,8 @@ export default function MessageBubble(props: MessageBubbleProps) {
       return;
     }
     lastTapRef.current = now;
-    if (m.kind === 'text') onOpenMenu(measureFlip());
+    // Меню: текст и голосовое — по тапу; фото — лонг-прессом (тап занят viewer'ом).
+    if (m.kind === 'text' || m.kind === 'voice') onOpenMenu(measureFlip());
   };
 
   const distinct = (() => {
@@ -379,6 +577,32 @@ export default function MessageBubble(props: MessageBubbleProps) {
           />
         )}
         {m.decryptError ? <i>Не удалось расшифровать</i> : m.text}
+        {metaNode}
+      </div>
+    ) : m.kind === 'voice' ? (
+      <div className={`bubble bubble-voice${glass ? ' glass' : ''}`}>
+        {m.replyTo && (
+          <ReplyQuote
+            replyTo={m.replyTo}
+            meUid={meUid}
+            peerName={peerName}
+            visibleMap={visibleMap}
+            roomKey={roomKey}
+            onJump={onJump}
+          />
+        )}
+        {(() => {
+          const st = photos[m.id];
+          if (!st || st.status === 'loading') {
+            return <VoicePlayer m={m} url={null} loading loadError={false} onRetry={() => {}} />;
+          }
+          if (st.status === 'error') {
+            return (
+              <VoicePlayer m={m} url={null} loading={false} loadError onRetry={() => onRetryPhoto(m)} />
+            );
+          }
+          return <VoicePlayer m={m} url={st.url} loading={false} loadError={false} onRetry={() => {}} />;
+        })()}
         {metaNode}
       </div>
     ) : (

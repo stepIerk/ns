@@ -1,4 +1,4 @@
-export type MessageKind = 'text' | 'photo';
+export type MessageKind = 'text' | 'photo' | 'voice';
 
 /** Цель ответа: ссылка на родительское сообщение (см. ChatMessage.replyTo). */
 export interface ReplyTarget {
@@ -23,6 +23,9 @@ export interface ChatMessage {
   mimeType?: string;
   size?: number;
   iv?: string;
+  // voice: длительность и огибающая для waveform (plaintext-метадата, не секрет).
+  durationMs?: number;
+  waveform?: number[];
   // Ответ (цитата): только ссылка на родителя, сниппет резолвится локально
   // по id (затем по clientMessageId — покрывает pending-родителя после эха).
   replyTo?: ReplyTarget;
@@ -45,6 +48,9 @@ export interface MessageDoc {
   driveFileId?: string; // Google Drive
   mimeType?: string;
   size?: number;
+  // voice
+  durationMs?: number;
+  waveform?: number[];
   // Ответ: ссылка на родителя (опционально, старые доки без неё валидны).
   replyToId?: string;
   replyToSenderId?: string;

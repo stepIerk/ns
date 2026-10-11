@@ -9,16 +9,30 @@ import {
 } from 'react';
 import {
   ArrowUp,
+  ChevronUp,
   EllipsisVertical,
   Loader2,
   Lock,
+  Mic,
   Plus,
+  Square,
+  Trash2,
+  Video,
   WifiOff,
   X,
 } from 'lucide-react';
 import type { PhotoState } from '../hooks/useMedia';
 import type { ReactionMap } from '../hooks/useReactions';
+import { useVoiceRecorder, type VoiceTake } from '../hooks/useVoiceRecorder';
 import type { LocalSettings } from '../lib/settings';
+import {
+  CANCEL_DX,
+  HOLD_TO_RECORD_MS,
+  LIVE_BARS,
+  LOCK_DY,
+  MIN_VOICE_MS,
+  formatVoiceTime,
+} from '../lib/voice';
 import MessageBubble from './MessageBubble';
 import SettingsSheet from './SettingsSheet';
 import type { ChatMessage, ReplyTarget } from '../types';
@@ -54,6 +68,12 @@ export interface ChatViewProps {
   // Действия
   onSubmitText: (text: string, opts?: { replyTo?: ReplyTarget }) => Promise<void>;
   onPickFile: (f: File, opts?: { replyTo?: ReplyTarget }) => void;
+  onSendVoice: (
+    blob: Blob,
+    mime: string,
+    recordedMs: number,
+    opts?: { replyTo?: ReplyTarget },
+  ) => void;
   onRetryPhoto: (m: ChatMessage) => void;
   onOpenViewer: (id: string) => void;
   onCloseViewer: () => void;
@@ -123,6 +143,7 @@ export default function ChatView(p: ChatViewProps) {
     onClearWallpaper,
     onSubmitText,
     onPickFile,
+    onSendVoice,
     onRetryPhoto,
     onOpenViewer,
     onCloseViewer,
@@ -169,6 +190,143 @@ export default function ChatView(p: ChatViewProps) {
       setToast(null);
     }, 2200);
   }, []);
+  // ---------- Голосовые: запись (стиль Telegram) ----------
+  // Тап по кнопке — смена mic/cam; холд mic — запись; слайд вверх — lock,
+  // слайд влево — отмена. Отпустил в holding — отправка; в locked пишем дальше.
+  const [recMode, setRecMode] = useState<'mic' | 'cam'>('mic');
+  const [cancelArmed, setCancelArmed] = useState(false);
+  const {
+    phase: recPhase,
+    elapsedMs: recElapsed,
+    start: recStart,
+    finish: recFinish,
+    lock: recLock,
+    cancel: recCancel,
+    setBarsEl: recSetBarsEl,
+  } = useVoiceRecorder();
+  const recording = recPhase !== 'idle';
+  const recPhaseRef = useRef(recPhase);
+  useEffect(() => {
+    recPhaseRef.current = recPhase;
+  });
+  const replyDraftRef = useRef<ReplyTarget | null>(null);
+  useEffect(() => {
+    replyDraftRef.current = replyDraft;
+  });
+  const recGesture = useRef<{ x: number; y: number; timer?: ReturnType<typeof setTimeout>; started: boolean } | null>(null);
+  const recBarsRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (recPhase === 'idle') return;
+    recSetBarsEl(recBarsRef.current);
+    return () => recSetBarsEl(null);
+  }, [recPhase, recSetBarsEl]);
+
+  const buzzLocal = (ms = 10) => {
+    try {
+      navigator.vibrate?.(ms);
+    } catch {
+      // ignore (iOS)
+    }
+  };
+
+  const handleTake = useCallback(
+    (take: VoiceTake | null) => {
+      setCancelArmed(false);
+      if (!take) return;
+      if (take.recordedMs < MIN_VOICE_MS || take.blob.size === 0) {
+        notify('Слишком короткое — удерживай кнопку дольше');
+        return;
+      }
+      const draft = replyDraftRef.current;
+      setReplyDraft(null);
+      onSendVoice(take.blob, take.mime, take.recordedMs, draft ? { replyTo: draft } : undefined);
+    },
+    [notify, onSendVoice],
+  );
+  const handleTakeRef = useRef(handleTake);
+  useEffect(() => {
+    handleTakeRef.current = handleTake;
+  });
+
+  const onRecDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    // Клавиатуру не трогаем (иначе схлопнется); pointer-события идут как шли.
+    e.preventDefault();
+    if (photoBusy || busy) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // В locked игнорим кнопку (там свои trash/send), иначе тап сменит режим.
+    if (recPhaseRef.current !== 'idle') return;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    const g = { x: e.clientX, y: e.clientY, started: false } as {
+      x: number;
+      y: number;
+      timer?: ReturnType<typeof setTimeout>;
+      started: boolean;
+    };
+    recGesture.current = g;
+    g.timer = setTimeout(() => {
+      if (recGesture.current !== g) return;
+      if (recMode === 'cam') {
+        recGesture.current = null;
+        notify('Видео-кружочки скоро 🎥');
+        return;
+      }
+      g.started = true;
+      inputRef.current?.blur();
+      setTypingActive(false);
+      void recStart((take) => handleTakeRef.current(take)).then((r) => {
+        if (!r.ok) {
+          if (recGesture.current === g) recGesture.current = null;
+          notify(r.message ?? 'Не удалось начать запись');
+        }
+      });
+    }, HOLD_TO_RECORD_MS);
+  };
+
+  const onRecMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const g = recGesture.current;
+    // Фазу читаем из ref: после lock() рендер может не успеть до следующих событий.
+    if (!g?.started || recPhaseRef.current !== 'holding') return;
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+    const armed = dx < CANCEL_DX;
+    setCancelArmed((prev) => (prev === armed ? prev : armed));
+    if (dy < LOCK_DY) {
+      recLock();
+      // Синхронно: эффект-зеркало догонит позже, а pointerup может прийти раньше.
+      recPhaseRef.current = 'locked';
+      setCancelArmed(false);
+      buzzLocal(15);
+    }
+  };
+
+  const onRecUp = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const g = recGesture.current;
+    recGesture.current = null;
+    if (g?.timer) clearTimeout(g.timer);
+    if (!g) return;
+    if (!g.started) {
+      // Быстрый тап — смена режима mic/cam.
+      setRecMode((m) => (m === 'mic' ? 'cam' : 'mic'));
+      buzzLocal(10);
+      return;
+    }
+    if (recPhaseRef.current === 'locked') return; // палец отпустили — пишем дальше
+    if (e.clientX - g.x < CANCEL_DX) recCancel();
+    else recFinish(true);
+  };
+
+  const onRecCancel = () => {
+    const g = recGesture.current;
+    recGesture.current = null;
+    if (g?.timer) clearTimeout(g.timer);
+    // Прерванный жест — не шлём сюрпризов; locked продолжает писаться.
+    if (g?.started && recPhaseRef.current !== 'locked') recCancel();
+  };
+
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -403,6 +561,7 @@ export default function ChatView(p: ChatViewProps) {
   const fitInput = () => {
     const el = inputRef.current;
     if (!el) return;
+    // eslint-disable-next-line react-hooks/immutability -- прямое измерение DOM-узла
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
   };
@@ -451,9 +610,11 @@ export default function ChatView(p: ChatViewProps) {
     : draftParent
       ? draftParent.kind === 'photo'
         ? '📷 Фото'
-        : draftParent.decryptError
-          ? 'Сообщение'
-          : (draftParent.text ?? 'Сообщение')
+        : draftParent.kind === 'voice'
+          ? '🎤 Голосовое'
+          : draftParent.decryptError
+            ? 'Сообщение'
+            : (draftParent.text ?? 'Сообщение')
       : 'Сообщение';
 
   // Прыжок к цитируемому: скролл + flash; нет в окне — тянем историю (кап 3 стр.).
@@ -680,47 +841,105 @@ export default function ChatView(p: ChatViewProps) {
             </button>
           </div>
         )}
-        <button
-          type="button"
-          className="icon-btn"
-          disabled={photoBusy}
-          onClick={() => fileRef.current?.click()}
-          onPointerDown={(e) => e.preventDefault()}
-          title="Отправить фото"
-          aria-label="Отправить фото"
-        >
-          {photoBusy ? <Loader2 size={20} className="spin" /> : <Plus size={20} />}
-        </button>
-        <textarea
-          ref={inputRef}
-          className="composer-input"
-          value={text}
-          rows={1}
-          onChange={(e) => {
-            const v = e.target.value;
-            setText(v);
-            setTypingActive(v.trim().length > 0);
-            fitInput();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              void onSubmit();
-            }
-          }}
-          placeholder="Сообщение"
-          maxLength={4000}
-          enterKeyHint="send"
-        />
-        <button
-          type="submit"
-          className="send-btn"
-          disabled={busy || !text.trim()}
-          onPointerDown={(e) => e.preventDefault()}
-          aria-label="Отправить"
-        >
-          {busy ? <Loader2 size={18} className="spin" /> : <ArrowUp size={18} />}
-        </button>
+        {!recording && (
+          <button
+            type="button"
+            className="icon-btn"
+            disabled={photoBusy}
+            onClick={() => fileRef.current?.click()}
+            onPointerDown={(e) => e.preventDefault()}
+            title="Отправить фото"
+            aria-label="Отправить фото"
+          >
+            {photoBusy ? <Loader2 size={20} className="spin" /> : <Plus size={20} />}
+          </button>
+        )}
+        {recording ? (
+          <div className="rec-ui">
+            <button
+              type="button"
+              className={`rec-trash${cancelArmed ? ' armed' : ''}`}
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => recCancel()}
+              title="Удалить запись"
+              aria-label="Удалить запись"
+            >
+              <Trash2 size={19} />
+            </button>
+            <span className="rec-dot" aria-hidden />
+            <span className="rec-time">{formatVoiceTime(recElapsed)}</span>
+            <div className="rec-bars" ref={recBarsRef} aria-hidden>
+              {Array.from({ length: LIVE_BARS }).map((_, i) => (
+                <span key={i} />
+              ))}
+            </div>
+            {recPhase === 'locked' ? (
+              <button
+                type="button"
+                className="send-btn"
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => recFinish(true)}
+                title="Остановить и отправить"
+                aria-label="Остановить и отправить"
+              >
+                <Square size={15} />
+              </button>
+            ) : (
+              <span className="rec-lock-hint" aria-hidden>
+                <Lock size={12} />
+                <ChevronUp size={15} />
+              </span>
+            )}
+          </div>
+        ) : (
+          <textarea
+            ref={inputRef}
+            className="composer-input"
+            value={text}
+            rows={1}
+            onChange={(e) => {
+              const v = e.target.value;
+              setText(v);
+              setTypingActive(v.trim().length > 0);
+              fitInput();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void onSubmit();
+              }
+            }}
+            placeholder="Сообщение"
+            maxLength={4000}
+            enterKeyHint="send"
+          />
+        )}
+        {!recording && text.trim() ? (
+          <button
+            type="submit"
+            className="send-btn"
+            disabled={busy}
+            onPointerDown={(e) => e.preventDefault()}
+            aria-label="Отправить"
+          >
+            {busy ? <Loader2 size={18} className="spin" /> : <ArrowUp size={18} />}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={`rec-btn${recording ? ' recording' : ''}`}
+            disabled={photoBusy}
+            onPointerDown={onRecDown}
+            onPointerMove={onRecMove}
+            onPointerUp={onRecUp}
+            onPointerCancel={onRecCancel}
+            onContextMenu={(e) => e.preventDefault()}
+            title={recMode === 'mic' ? 'Голосовое (удерживай)' : 'Видео (скоро)'}
+            aria-label={recMode === 'mic' ? 'Записать голосовое' : 'Записать видео'}
+          >
+            {recMode === 'mic' ? <Mic size={20} /> : <Video size={20} />}
+          </button>
+        )}
       </form>
 
       {toast && (

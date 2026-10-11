@@ -235,6 +235,9 @@ export default function Chat({
       onPickFile={(f, opts) => {
         void media.sendPhoto(f, opts);
       }}
+      onSendVoice={(blob, mime, recordedMs, opts) => {
+        void media.sendVoice(blob, mime, recordedMs, opts);
+      }}
       onRetryPhoto={(m) => media.retryPhoto(m)}
       onOpenViewer={(id) => media.openViewer(id)}
       onCloseViewer={() => media.closeViewer()}

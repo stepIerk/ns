@@ -56,13 +56,15 @@ function docToRecord(id: string, v: MessageDoc): StoredMsg {
     ts: tsOf(v),
     clientMessageId: v.clientMessageId ?? id,
     senderId: v.senderId ?? '?',
-    kind: (v.kind ?? 'text') === 'photo' ? 'photo' : 'text',
+    kind: v.kind === 'voice' ? 'voice' : v.kind === 'photo' ? 'photo' : 'text',
     ciphertext: v.ciphertext,
     iv: v.iv,
     mediaId: v.mediaId,
     driveFileId: v.driveFileId,
     mimeType: v.mimeType,
     size: v.size,
+    durationMs: v.durationMs,
+    waveform: v.waveform,
     replyToId: v.replyToId,
     replyToSenderId: v.replyToSenderId,
     replyToClientId: v.replyToClientId,
@@ -91,18 +93,21 @@ async function recordsToChat(
     const mine = r.senderId === userUid;
     const st: ChatMessage['status'] = mine && seen != null && r.ts <= seen ? 'read' : 'sent';
     if (r.kind !== 'text') {
+      const isVoice = r.kind === 'voice';
       out.push({
         id: r.id,
         clientMessageId: r.clientMessageId,
         senderId: r.senderId,
         createdAtMs: r.ts,
-        kind: 'photo',
+        kind: isVoice ? 'voice' : 'photo',
         mediaId: r.mediaId,
         driveFileId: r.driveFileId,
         mimeType: r.mimeType,
         size: r.size,
         iv: r.iv,
-        text: '[фото — нажмите открыть]',
+        durationMs: r.durationMs,
+        waveform: r.waveform,
+        text: isVoice ? undefined : '[фото — нажмите открыть]',
         status: st,
         replyTo: recordReplyTo(r),
       });

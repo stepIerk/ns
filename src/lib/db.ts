@@ -3,7 +3,7 @@
 // Две независимые базы (падают независимо, версионируются независимо):
 // - ns-msgs-v1: зеркало документов сообщений, FIFO 10000 (старейшие удаляются).
 //   Храним только plain-поля (никаких Firestore Timestamp — не клонируются).
-// - ns-media-v1: расшифрованные блобы фото, FIFO ~2 ГБ по времени записи.
+// - ns-media-v1: расшифрованные блобы фото и голосовых, FIFO ~2 ГБ по времени записи.
 //
 // Правила: все операции могут кидать (нет IDB / квота / iOS-причуды) —
 // вызывающий код ВСЕГДА ловит и падает обратно на сеть/память, рендер
@@ -14,13 +14,16 @@ export interface StoredMsg {
   ts: number; // clientTs — тот же порядок, что orderBy('clientTs')
   clientMessageId: string;
   senderId: string;
-  kind: 'text' | 'photo';
+  kind: 'text' | 'photo' | 'voice';
   ciphertext?: string;
   iv?: string;
   mediaId?: string;
   driveFileId?: string;
   mimeType?: string;
   size?: number;
+  // voice (schemaless — миграции не надо)
+  durationMs?: number;
+  waveform?: number[];
   // Ответ: ссылка на родителя (значения schemaless — миграции не надо).
   replyToId?: string;
   replyToSenderId?: string;
