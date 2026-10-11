@@ -162,6 +162,28 @@ export default function ChatView(p: ChatViewProps) {
   // Якорь скролла для бесшовной догрузки вверх.
   const anchorRef = useRef<{ h: number; top: number } | null>(null);
 
+  // Обои дублируем на body: только так заливаются и safe-зоны
+  // (верх под Dynamic Island и низ под home-индикатором), иначе там
+  // виден голый фон темы. Цвет темы остаётся подложкой под картинкой.
+  useEffect(() => {
+    if (!wallpaperUrl) return;
+    const b = document.body;
+    const prevImage = b.style.backgroundImage;
+    const prevSize = b.style.backgroundSize;
+    const prevPosition = b.style.backgroundPosition;
+    const prevRepeat = b.style.backgroundRepeat;
+    b.style.backgroundImage = `url("${wallpaperUrl}")`;
+    b.style.backgroundSize = 'cover';
+    b.style.backgroundPosition = 'center';
+    b.style.backgroundRepeat = 'no-repeat';
+    return () => {
+      b.style.backgroundImage = prevImage;
+      b.style.backgroundSize = prevSize;
+      b.style.backgroundPosition = prevPosition;
+      b.style.backgroundRepeat = prevRepeat;
+    };
+  }, [wallpaperUrl]);
+
   // Замер плавающих баров → CSS-переменные для отступов ленты,
   // чтобы сообщения заходили под стекло, но не прятались под ним.
   useEffect(() => {
