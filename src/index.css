@@ -257,7 +257,7 @@ button { font-family: inherit; }
   overscroll-behavior: contain;
   scroll-padding-top: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 12px);
   scroll-padding-bottom: calc(var(--bar-bottom, 64px) + px + var(--kb-inset, 0px));
-  padding: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 8px) 12px calc(var(--bar-bottom, 64px) + 35px);
+  padding: calc(env(safe-area-inset-top) + 8px + var(--bar-top, 60px) + 8px) 12px calc(var(--bar-bottom, 64px) + 55px);
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1110,7 +1110,8 @@ input[type='color'].colorwell {
 .to-bottom {
   position: absolute;
   right: 16px;
-  bottom: calc(var(--bar-bottom, 64px) + 20px);
+  /* Выше верха композера: его высота + отступ от низа (safe-area, клавиатура). */
+  bottom: calc(var(--bar-bottom, 64px) + env(safe-area-inset-bottom, 0px) + var(--kb-inset, 0px) + 16px);
   width: 44px; height: 44px;
   border-radius: 50%;
   border: 1px solid var(--border);

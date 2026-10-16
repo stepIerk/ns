@@ -363,10 +363,19 @@ export default function ChatView(p: ChatViewProps) {
   const [newCount, setNewCount] = useState(0);
   const atBottomRef = useRef(true);
   const prevLastRef = useRef<{ id: string; cmid: string } | null>(null);
+  // Липкий низ: после программного скролла вниз каждый ререндер дожимаем
+  // scrollTop до низа (картинки догружаются и сдвигают низ уже после скролла).
+  // Снимается только жестом пользователя по ленте.
+  const pinBottomRef = useRef(false);
+  const smoothUntilRef = useRef(0);
   const goBottom = useCallback(() => {
     setNewCount(0);
     const el = listRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    if (el) {
+      pinBottomRef.current = true;
+      smoothUntilRef.current = Date.now() + 600;
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }
   }, []);
   // Окно рендера: DOM держим маленьким (iPhone), полный объём — в IDB/state.
   const [renderCount, setRenderCount] = useState(120);
@@ -569,12 +578,20 @@ export default function ChatView(p: ChatViewProps) {
     if (!bootedRef.current) {
       bootedRef.current = true;
       prevLastRef.current = { id: last.id, cmid: last.clientMessageId };
+      pinBottomRef.current = true;
       el.scrollTop = el.scrollHeight;
       return;
     }
-    if (prev && prev.id === last.id) return;
+    if (prev && prev.id === last.id) {
+      // Низ тот же (история вверх / окно рендера), но если держим пин —
+      // дожимаем (долетели картинки и сдвинули низ).
+      if (pinBottomRef.current) el.scrollTop = el.scrollHeight;
+      return;
+    }
     prevLastRef.current = { id: last.id, cmid: last.clientMessageId };
     if (last.senderId === meUid || atBottomRef.current) {
+      pinBottomRef.current = true;
+      smoothUntilRef.current = Date.now() + 600;
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     } else {
       // Сколько новых после прошлого низа (матч по id и clientMessageId —
@@ -592,6 +609,33 @@ export default function ChatView(p: ChatViewProps) {
       if (n > 0) setNewCount((c) => c + n);
     }
   }, [visible, meUid]);
+
+  // Липкий низ: пока пин активен, каждый коммит дожимает низ без анимации
+  // (картинки, typing, презенс сдвигают ленту без смены visible).
+  // Плавный скролл не рвём: в его окне эффект молчит.
+  useLayoutEffect(() => {
+    if (!pinBottomRef.current) return;
+    if (Date.now() < smoothUntilRef.current) return;
+    const el = listRef.current;
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight > 2) {
+      el.scrollTop = el.scrollHeight;
+    }
+  });
+
+  // Жест по ленте снимает пин (дальше позицией владеет пользователь).
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const unpin = () => {
+      pinBottomRef.current = false;
+    };
+    el.addEventListener('pointerdown', unpin);
+    el.addEventListener('wheel', unpin, { passive: true });
+    return () => {
+      el.removeEventListener('pointerdown', unpin);
+      el.removeEventListener('wheel', unpin);
+    };
+  }, []);
 
   // Escape закрывает шторку, меню реакций и spark-панель.
   useEffect(() => {
