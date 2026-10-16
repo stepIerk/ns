@@ -80,6 +80,8 @@ export function usePresence(myUid: string): {
   presence: PeerPresence;
   setTyping: (active: boolean) => void;
   markSeen: (clientTs: number) => void;
+  connected: boolean | null; // RTDB .info/connected (null — ещё не знаем)
+  serverOffsetMs: number; // .info/serverTimeOffset: Date.now + offset = часы сервера
 } {
   const [presence, setPresence] = useState<PeerPresence>({
     known: false,
@@ -89,6 +91,8 @@ export function usePresence(myUid: string): {
     seenTs: null,
   });
   const [peerUid, setPeerUid] = useState<string | null>(() => loadCachedPeer(myUid));
+  const [connected, setConnected] = useState<boolean | null>(null);
+  const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const typingActive = useRef(false);
   const lastTypingWrite = useRef(0);
   const seenSentRef = useRef(0);
@@ -130,7 +134,9 @@ export function usePresence(myUid: string): {
     if (!rtdb) return;
     const myRef = ref(rtdb, `presence/${myUid}`);
     const unsub = onValue(ref(rtdb, '.info/connected'), (snap) => {
-      if (snap.val() !== true) return;
+      const up = snap.val() === true;
+      setConnected(up);
+      if (!up) return;
       onDisconnect(myRef)
         .update({ state: 'offline', lastChanged: rtdbTs() })
         .then(() => {
@@ -149,6 +155,18 @@ export function usePresence(myUid: string): {
       }
     };
   }, [myUid]);
+
+  // Смещение часов устройства относительно сервера: freshness-статусы
+  // («в сети», «печатает», last seen) считаем по серверному времени,
+  // иначе врёт при рассинхроне часов. Бесплатно, без биллинга.
+  useEffect(() => {
+    const rtdb = getRtdb();
+    if (!rtdb) return;
+    return onValue(ref(rtdb, '.info/serverTimeOffset'), (snap) => {
+      const v = snap.val();
+      setServerOffsetMs(typeof v === 'number' ? v : 0);
+    });
+  }, []);
 
   // Подписка на узел пира (единственный RTDB-слушатель данных).
   useEffect(() => {
@@ -217,5 +235,5 @@ export function usePresence(myUid: string): {
     [myUid],
   );
 
-  return { presence, setTyping, markSeen };
+  return { presence, setTyping, markSeen, connected, serverOffsetMs };
 }

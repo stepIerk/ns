@@ -149,9 +149,31 @@ async function push(event, corsHeaders) {
     webpush.setVapidDetails(subj, pub, priv);
     vapidSet = true;
   }
+  // Push-payload: только метадата + шифротекст. Plaintext тут нет и не будет:
+  // текст расшифровывает сам получатель в своём Service Worker комнатным ключом
+  // (E2E цел — сервер, Apple и Google видят лишь шифротекст; сам web-push
+  // шифрует payload на ключ подписки). Шифр кладём, только если весь payload
+  // влезает в ~2.8КБ (лимит APNs ~4КБ) — длинные тексты уедут заглушкой по kind,
+  // расшифровка всё равно видна в открытом чате.
+  const payload = {
+    messageId,
+    senderId: uid,
+    ts: Date.now(),
+    kind: msg.kind || 'text',
+  };
+  if (msg.kind === 'voice' && typeof msg.durationMs === 'number') {
+    payload.durationMs = msg.durationMs;
+  }
+  if (typeof msg.ciphertext === 'string' && typeof msg.iv === 'string') {
+    const withCipher = { ...payload, ciphertext: msg.ciphertext, iv: msg.iv };
+    if (JSON.stringify(withCipher).length <= 2800) {
+      payload.ciphertext = msg.ciphertext;
+      payload.iv = msg.iv;
+    }
+  }
   // Только служебные данные, без plaintext.
   try {
-    await webpush.sendNotification(sub, JSON.stringify({ messageId, senderId: uid, ts: Date.now() }));
+    await webpush.sendNotification(sub, JSON.stringify(payload));
   } catch (e) {
     const status = e && e.statusCode;
     if (status === 404 || status === 410) {

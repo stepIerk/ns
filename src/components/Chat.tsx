@@ -31,7 +31,7 @@ export default function Chat({
   updateSettings,
   resetAppearance,
 }: Props) {
-  const { presence, setTyping, markSeen } = usePresence(user.uid);
+  const { presence, setTyping, markSeen, connected, serverOffsetMs } = usePresence(user.uid);
 
   const {
     visible,
@@ -177,17 +177,25 @@ export default function Chat({
     };
   }, [visible.length]);
 
-  const offline = !online || fromCache;
+  // Часы устройства могут врать — freshness-статусы считаем по времени сервера.
+  // Чтение часов в рендере осознанно: тикер presence ререндерит каждые 5с.
+  // eslint-disable-next-line react-hooks/purity
+  const nowMs = Date.now() + (serverOffsetMs || 0);
+  // Баннер — по реальной связи (RTDB .info/connected: бесплатно, realtime),
+  // а не по флагу кэша Firestore. fromCache залипает true, пока Watch-стрим
+  // не отдаст серверный снапшот — раньше баннер висел до первого действия.
+  // connected === null (RTDB не настроена/ещё не ответила) — баннер не форсим.
+  const offline = !online || connected === false;
 
-  const peerOnline = isOnline(presence) && !offline;
-  const peerTyping = isTyping(presence) && !offline;
+  const peerOnline = isOnline(presence, nowMs) && !offline;
+  const peerTyping = isTyping(presence, nowMs) && !offline;
   const peerStatusText = offline
     ? 'переподключение…'
     : peerTyping
       ? 'печатает…'
       : peerOnline
         ? 'в сети'
-        : (lastSeenText(presence) ?? 'сквозное шифрование');
+        : (lastSeenText(presence, nowMs) ?? 'сквозное шифрование');
 
   const swInfo =
     'serviceWorker' in navigator
@@ -196,7 +204,7 @@ export default function Chat({
         : 'sw: нет контроля (открой онлайн и перезапусти)'
       : 'sw: не поддерживается';
   const debugLines = [
-    `online=${String(online)} fromCache=${String(fromCache)} snapshots=${snapCount} msgs=${visible.length}`,
+    `online=${String(online)} rtdb=${String(connected)} srvOff=${serverOffsetMs}ms fromCache=${String(fromCache)} snapshots=${snapCount} msgs=${visible.length}`,
     `api=${apiBase}`,
     ...(pushStatus ? [pushStatus] : []),
     ...(snapError ? [`snap err: ${snapError}`] : []),
