@@ -157,13 +157,13 @@ export function useMedia(
     pumpRef.current = pump;
   }, [pump]);
 
-  // Поставить вложения в очередь автозагрузки (фото + голосовые: скачивание
-  // и расшифровка одинаковые; идемпотентно, StrictMode-safe).
+  // Поставить вложения в очередь автозагрузки (фото + голосовые + кружочки:
+  // скачивание и расшифровка одинаковые; идемпотентно, StrictMode-safe).
   const ensurePhotos = useCallback(
     (msgs: ChatMessage[]) => {
       let added = false;
       for (const m of msgs) {
-        if ((m.kind !== 'photo' && m.kind !== 'voice') || !m.iv || !m.driveFileId) continue;
+        if ((m.kind !== 'photo' && m.kind !== 'voice' && m.kind !== 'video') || !m.iv || !m.driveFileId) continue;
         if (photosRef.current[m.id] || queuedRef.current.has(m.id)) continue;
         queuedRef.current.add(m.id);
         photosRef.current[m.id] = { status: 'loading' };
@@ -360,6 +360,87 @@ export function useMedia(
     [userUid, notifyMessage],
   );
 
+  // Кружок: та же цепочка, что у голосового (шифр → Drive чанками → media → message).
+  // Кроп в круг — только CSS-ом при показе, в Drive лежит прямоугольник как есть.
+  const sendVideo = useCallback(
+    async (blob: Blob, mime: string, recordedMs: number, opts?: { replyTo?: ReplyTarget }) => {
+      setError(null);
+      setPhotoBusy(true);
+      const clientMessageId = crypto.randomUUID();
+      const mediaId = crypto.randomUUID();
+      try {
+        if (blob.size > MAX_PHOTO_BYTES) throw new Error('Видео больше 10 МБ');
+        const plainBuf = await blob.arrayBuffer();
+        if (plainBuf.byteLength === 0) throw new Error('Пустая запись');
+        const { ivB64, cipher } = await encryptBytes(keyRef.current, plainBuf);
+        const { sessionUrl } = await authedPost<{ sessionUrl: string }>(
+          '/api/media/upload-init',
+          { mediaId, mimeType: mime, size: cipher.byteLength },
+          { timeoutMs: MEDIA_TIMEOUT_MS },
+        );
+        const bytes = new Uint8Array(cipher);
+        const total = bytes.byteLength;
+        let driveFileId = '';
+        for (let start = 0; start < total; start += UPLOAD_CHUNK) {
+          const end = Math.min(start + UPLOAD_CHUNK - 1, total - 1);
+          const r = await authedPost<{ done: boolean; fileId?: string }>(
+            '/api/media/upload-chunk',
+            { sessionUrl, start, end, total, data: bufToB64(bytes.slice(start, end + 1)) },
+            { timeoutMs: MEDIA_TIMEOUT_MS },
+          );
+          if (r.done) driveFileId = r.fileId ?? '';
+        }
+        if (!driveFileId) throw new Error('Drive не вернул id файла');
+        const fb = getFirebase();
+        if (!fb) throw new Error('Firebase не настроен');
+        await withTimeout(
+          setDoc(doc(fb.db, 'media', mediaId), {
+            messageId: clientMessageId,
+            driveFileId,
+            size: cipher.byteLength,
+            mimeType: mime,
+            iv: ivB64,
+            senderId: userUid,
+            createdAt: serverTimestamp(),
+          }),
+        );
+        const replyTo = opts?.replyTo;
+        const ref = await withTimeout(
+          addDoc(collection(fb.db, 'rooms', 'main', 'messages'), {
+            clientMessageId,
+            senderId: userUid,
+            createdAt: serverTimestamp(),
+            clientTs: Date.now(),
+            kind: 'video',
+            mediaId,
+            driveFileId,
+            mimeType: mime,
+            size: cipher.byteLength,
+            iv: ivB64,
+            durationMs: recordedMs,
+            ...(replyTo
+              ? {
+                  replyToId: replyTo.id,
+                  replyToSenderId: replyTo.senderId,
+                  ...(replyTo.clientMessageId
+                    ? { replyToClientId: replyTo.clientMessageId }
+                    : null),
+                }
+              : null),
+          } satisfies MessageDoc),
+        );
+        notifyMessage(ref.id);
+        // Своё — сразу в локальный кэш (перекачивать не надо).
+        blobPut(mediaId, new Blob([plainBuf], { type: mime }), mime).catch(() => {});
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Не удалось отправить видео');
+      } finally {
+        setPhotoBusy(false);
+      }
+    },
+    [userUid, notifyMessage],
+  );
+
   const openViewer = useCallback(
     (id: string) => {
       const st = photosRef.current[id];
@@ -382,6 +463,7 @@ export function useMedia(
     mediaError: error,
     sendPhoto,
     sendVoice,
+    sendVideo,
     ensurePhotos,
     retryPhoto,
     openViewer,

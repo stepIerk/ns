@@ -1106,6 +1106,200 @@ input[type='color'].colorwell {
   text-align: right;
 }
 
+/* ---------- Кружочки: запись и плеер (кроп только CSS) ---------- */
+
+/* ---------- Кружочки: сцена записи (центр + блюр + полоса времени) ---------- */
+
+/* Сцена поверх ленты и шапки, под композером (там палец и кнопки).
+   pointer-events нет — жесты слайдов идут на кнопку записи через capture. */
+.vrec-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(20px) saturate(1.2);
+  pointer-events: none;
+  animation: vrec-stage-in 0.22s ease-out;
+}
+@keyframes vrec-stage-in {
+  from { opacity: 0; }
+}
+.vrec-big {
+  width: min(72vw, 330px);
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: #000;
+  box-shadow: var(--shadow);
+}
+.vrec-big video {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.vrec-timer {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.vrec-progress {
+  width: min(72vw, 330px);
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.vrec-progress i {
+  display: block;
+  height: 100%;
+  background: #e5484d;
+  border-radius: 2px;
+  transition: width 0.2s linear;
+}
+
+/* ---------- Кружочки: театр просмотра ---------- */
+
+.video-theater {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding-bottom: 110px; /* низ под композером (он всегда сверху) */
+  background: rgba(0, 0, 0, 0.88);
+  animation: vrec-stage-in 0.2s ease-out;
+}
+.vtheater-close {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  right: 12px;
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.video-stage-player {
+  position: relative;
+  width: min(80vw, 44vh);
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: #000;
+}
+.video-stage-player video {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.vtheater-bigplay {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 76px; height: 76px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.vtheater-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(80vw, 44vh);
+  color: #fff;
+}
+.vtheater-btn {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.vtheater-time {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+  flex-shrink: 0;
+  min-width: 32px;
+  text-align: center;
+}
+.seekbar {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none; /* скраб вместо скролла */
+}
+.seekbar-track {
+  position: relative;
+  height: 4px;
+  flex: 1;
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 2px;
+}
+.seekbar-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  background: #fff;
+  border-radius: 2px;
+}
+
+/* Кружок в ленте: без рамки пузыря, форма из настроек зрителя. */
+.video-wrap {
+  position: relative;
+  width: 210px;
+  max-width: 60vw;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: #000;
+  cursor: pointer;
+}
+.video-wrap video {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.video-loading { width: 210px; max-width: 60vw; border-radius: 0; }
+.video-dur {
+  position: absolute;
+  left: 8px; bottom: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 7px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+.video-mute {
+  position: absolute;
+  right: 8px; bottom: 8px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+
 /* Кнопка «Вниз» (видна при чтении истории) + бейдж новых сообщений. */
 .to-bottom {
   position: absolute;

@@ -56,7 +56,7 @@ function docToRecord(id: string, v: MessageDoc): StoredMsg {
     ts: tsOf(v),
     clientMessageId: v.clientMessageId ?? id,
     senderId: v.senderId ?? '?',
-    kind: v.kind === 'voice' ? 'voice' : v.kind === 'photo' ? 'photo' : 'text',
+    kind: v.kind === 'voice' ? 'voice' : v.kind === 'video' ? 'video' : v.kind === 'photo' ? 'photo' : 'text',
     ciphertext: v.ciphertext,
     iv: v.iv,
     mediaId: v.mediaId,
@@ -94,13 +94,13 @@ async function recordsToChat(
     const mine = r.senderId === userUid;
     const st: ChatMessage['status'] = mine && seen != null && r.ts <= seen ? 'read' : 'sent';
     if (r.kind !== 'text') {
-      const isVoice = r.kind === 'voice';
+      const mediaKind = r.kind === 'voice' ? 'voice' : r.kind === 'video' ? 'video' : 'photo';
       out.push({
         id: r.id,
         clientMessageId: r.clientMessageId,
         senderId: r.senderId,
         createdAtMs: r.ts,
-        kind: isVoice ? 'voice' : 'photo',
+        kind: mediaKind,
         mediaId: r.mediaId,
         driveFileId: r.driveFileId,
         mimeType: r.mimeType,
@@ -109,7 +109,7 @@ async function recordsToChat(
         durationMs: r.durationMs,
         waveform: r.waveform,
         spark: r.spark,
-        text: isVoice ? undefined : '[фото — нажмите открыть]',
+        text: r.kind === 'photo' ? '[фото — нажмите открыть]' : undefined,
         status: st,
         replyTo: recordReplyTo(r),
       });

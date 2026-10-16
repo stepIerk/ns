@@ -279,6 +279,31 @@ export default function Preview() {
       ]);
     });
   };
+
+  // Кружок в превью: настоящий записанный blob → сразу url + сообщение.
+  const sendVideoPreview = (blob: Blob, mime: string, recordedMs: number) => {
+    const url = URL.createObjectURL(blob);
+    const id = `pv-local-${Date.now()}`;
+    previewPhotoUrls.set(id, url);
+    setPhotoTick((x) => x + 1);
+    setExtra((prev) => [
+      ...prev,
+      {
+        id,
+        clientMessageId: id,
+        senderId: ME,
+        createdAtMs: Date.now(),
+        kind: 'video',
+        mediaId: `m-${id}`,
+        driveFileId: `d-${id}`,
+        mimeType: mime,
+        size: blob.size,
+        iv: 'iv',
+        durationMs: recordedMs,
+        status: 'sent',
+      },
+    ]);
+  };
   const photosWithLocal = useMemo(() => {
     const out = { ...photos };
     for (const [id, url] of previewPhotoUrls) {
@@ -355,6 +380,8 @@ export default function Preview() {
             bubbleGlassTheirs: false,
             bubbleColorMine: null,
             bubbleColorTheirs: null,
+            videoShape: 'circle',
+            videoRadius: 28,
           })
         }
         avatarUrl={null}
@@ -366,6 +393,7 @@ export default function Preview() {
         onSubmitText={submitText}
         onPickFile={pickFile}
         onSendVoice={sendVoicePreview}
+        onSendVideo={sendVideoPreview}
         onRetryPhoto={() => {}}
         onOpenViewer={(id) => setViewerId(id)}
         onCloseViewer={() => setViewerId(null)}

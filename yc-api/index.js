@@ -65,8 +65,8 @@ async function uploadInit(event, corsHeaders) {
     return json(400, { error: 'bad mediaId' }, corsHeaders);
   }
   if (!mimeType || typeof mimeType !== 'string' ||
-      (!mimeType.startsWith('image/') && !mimeType.startsWith('audio/'))) {
-    return json(400, { error: 'only images and audio supported' }, corsHeaders);
+      (!mimeType.startsWith('image/') && !mimeType.startsWith('audio/') && !mimeType.startsWith('video/'))) {
+    return json(400, { error: 'only images, audio and video supported' }, corsHeaders);
   }
   if (!size || typeof size !== 'number' || size <= 0 || size > MAX_CIPHER_BYTES) {
     return json(400, { error: 'bad size (max 10MB plaintext + overhead)' }, corsHeaders);

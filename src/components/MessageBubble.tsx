@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   CheckCheck,
@@ -9,6 +9,9 @@ import {
   Play,
   RefreshCw,
   Reply,
+  Volume2,
+  VolumeX,
+  X,
 } from 'lucide-react';
 import type { PhotoState } from '../hooks/useMedia';
 import {
@@ -72,9 +75,11 @@ function ReplyQuote({ replyTo, meUid, peerName, visibleMap, roomKey, onJump }: Q
           ? '📷 Фото'
           : parent.kind === 'voice'
             ? '🎤 Голосовое'
-            : parent.decryptError
-              ? 'Сообщение'
-              : truncate(parent.text ?? 'Сообщение', 90),
+            : parent.kind === 'video'
+              ? '🎥 Кружок'
+              : parent.decryptError
+                ? 'Сообщение'
+                : truncate(parent.text ?? 'Сообщение', 90),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replyTo.id, replyTo.clientMessageId, visibleMap, meUid, peerName]);
@@ -98,6 +103,10 @@ function ReplyQuote({ replyTo, meUid, peerName, visibleMap, roomKey, onJump }: Q
         }
         if (rec.kind === 'voice') {
           setRemote({ name: nameOf(rec.senderId), text: '🎤 Голосовое' });
+          return;
+        }
+        if (rec.kind === 'video') {
+          setRemote({ name: nameOf(rec.senderId), text: '🎥 Кружок' });
           return;
         }
         try {
@@ -362,6 +371,300 @@ function VoicePlayer({ m, url, loading, loadError, onRetry }: VoicePlayerProps) 
   );
 }
 
+// ---------- Кружок: плеер ----------
+
+interface VideoBubbleProps {
+  m: ChatMessage;
+  url: string | null;
+  loadError: boolean;
+  shape: 'circle' | 'rounded';
+  radius: number;
+  onRetry: () => void;
+  onExpand: () => void;
+}
+
+function VideoBubble({ m, url, loadError, shape, radius, onRetry, onExpand }: VideoBubbleProps) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const totalMs = m.durationMs && m.durationMs > 0 ? m.durationMs : 0;
+
+  // muted ставим свойству императивно: React-атрибут muted не цепляется
+  // к свойству, без этого autoplay заблокируется везде.
+  const setVideoEl = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    if (el) {
+      try {
+        el.muted = true;
+      } catch {
+        // ignore
+      }
+      el.play().catch(() => {});
+    }
+  }, []);
+
+  // Пауза за кадром (батарея), при возврате — play.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !url || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          if (v.paused) v.play().catch(() => {});
+        } else if (!v.paused) {
+          try {
+            v.pause();
+          } catch {
+            // ignore
+          }
+        }
+      },
+      { threshold: 0.25 },
+    );
+    io.observe(v);
+    return () => io.disconnect();
+  }, [url]);
+
+  // Тап — открыть театр (там звук, пауза и перемотка).
+  const openTheater = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+    if (url) onExpand();
+  };
+
+  if (loadError) {
+    return (
+      <div className="photo-error">
+        Не удалось загрузить видео
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onRetry();
+          }}
+        >
+          <RefreshCw size={13} /> Повторить
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="video-wrap"
+      style={{ borderRadius: shape === 'circle' ? '50%' : `${radius}px` }}
+      onClick={openTheater}
+    >
+      {url ? (
+        <video
+          key={url}
+          ref={setVideoEl}
+          src={url}
+          muted
+          loop
+          playsInline
+          autoPlay
+          preload="metadata"
+          disablePictureInPicture
+        />
+      ) : (
+        <div className="photo-loading video-loading" aria-hidden />
+      )}
+      <span className="video-dur">{formatVoiceTime(totalMs)}</span>
+    </div>
+  );
+}
+
+// ---------- Театр кружка: большой просмотр с перемоткой ----------
+
+interface VideoTheaterProps {
+  m: ChatMessage;
+  url: string;
+  shape: 'circle' | 'rounded';
+  radius: number;
+  onClose: () => void;
+}
+
+export function VideoTheater({ m, url, shape, radius, onClose }: VideoTheaterProps) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const scrubbingRef = useRef(false);
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const totalMs = m.durationMs && m.durationMs > 0 ? m.durationMs : 0;
+
+  const baseOf = (v: HTMLVideoElement | null): number => {
+    const d = v?.duration;
+    if (typeof d === 'number' && Number.isFinite(d) && d > 0) return d;
+    return totalMs > 0 ? totalMs / 1000 : 0;
+  };
+
+  // Открытие идёт из жеста: пробуем сразу со звуком, иначе fallback в mute.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      v.muted = false;
+    } catch {
+      // ignore
+    }
+    void v.play().then(
+      () => {
+        setPlaying(true);
+        setMuted(false);
+      },
+      () => {
+        try {
+          v.muted = true;
+        } catch {
+          // ignore
+        }
+        setMuted(true);
+        void v.play().then(
+          () => setPlaying(true),
+          () => setPlaying(false),
+        );
+      },
+    );
+  }, [url]);
+
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused || v.ended) {
+      if (v.ended) {
+        try {
+          v.currentTime = 0;
+        } catch {
+          // ignore
+        }
+        setProgress(0);
+      }
+      void v.play().then(
+        () => setPlaying(true),
+        () => setPlaying(false),
+      );
+    } else {
+      try {
+        v.pause();
+      } catch {
+        // ignore
+      }
+      setPlaying(false);
+    }
+  };
+
+  const toggleMute = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    const next = !muted;
+    setMuted(next);
+    try {
+      v.muted = next;
+      if (!next && v.paused) v.play().catch(() => {});
+    } catch {
+      // ignore
+    }
+  };
+
+  const seekFrac = (frac: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    const base = baseOf(v);
+    if (base <= 0) return;
+    const t = Math.min(0.999, Math.max(0, frac)) * base;
+    try {
+      v.currentTime = t;
+    } catch {
+      // ignore
+    }
+    setProgress(t / base);
+  };
+
+  const fracFromClientX = (clientX: number): number | null => {
+    const bar = barRef.current;
+    if (!bar) return null;
+    const r = bar.getBoundingClientRect();
+    return Math.min(0.999, Math.max(0, (clientX - r.left) / Math.max(1, r.width)));
+  };
+
+  const onBarDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    scrubbingRef.current = true;
+    const f = fracFromClientX(e.clientX);
+    if (f != null) seekFrac(f);
+  };
+  const onBarMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!scrubbingRef.current) return;
+    const f = fracFromClientX(e.clientX);
+    if (f != null) seekFrac(f);
+  };
+  const onBarUp = () => {
+    scrubbingRef.current = false;
+  };
+
+  return (
+    <div className="video-theater" onClick={onClose}>
+      <button className="vtheater-close" onClick={onClose} aria-label="Закрыть">
+        <X size={20} />
+      </button>
+      <div
+        className="video-stage-player"
+        style={{ borderRadius: shape === 'circle' ? '50%' : `${radius * 2}px` }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <video
+          ref={videoRef}
+          src={url}
+          playsInline
+          preload="auto"
+          disablePictureInPicture
+          onClick={togglePlay}
+          onTimeUpdate={(e) => {
+            const v = e.currentTarget;
+            const base = baseOf(v);
+            if (base > 0 && !scrubbingRef.current) setProgress(Math.min(1, v.currentTime / base));
+          }}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => {
+            setPlaying(false);
+            setProgress(1);
+          }}
+        />
+        {!playing && (
+          <button className="vtheater-bigplay" onClick={togglePlay} aria-label="Смотреть">
+            <Play size={34} />
+          </button>
+        )}
+      </div>
+      <div className="vtheater-controls" onClick={(e) => e.stopPropagation()}>
+        <button className="vtheater-btn" onClick={togglePlay} aria-label={playing ? 'Пауза' : 'Смотреть'}>
+          {playing ? <Pause size={19} /> : <Play size={19} />}
+        </button>
+        <span className="vtheater-time">{formatVoiceTime(progress * totalMs)}</span>
+        <div
+          className="seekbar"
+          ref={barRef}
+          onPointerDown={onBarDown}
+          onPointerMove={onBarMove}
+          onPointerUp={onBarUp}
+          onPointerCancel={onBarUp}
+        >
+          <div className="seekbar-track" aria-hidden>
+            <div className="seekbar-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
+          </div>
+        </div>
+        <span className="vtheater-time">{formatVoiceTime(totalMs)}</span>
+        <button className="vtheater-btn" onClick={toggleMute} aria-label={muted ? 'Со звуком' : 'Без звука'}>
+          {muted ? <VolumeX size={19} /> : <Volume2 size={19} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Пузырь ----------
 
 export interface MessageBubbleProps {
@@ -380,6 +683,9 @@ export interface MessageBubbleProps {
   onReply: (m: ChatMessage) => void;
   onJump: (t: ReplyTarget) => void;
   onSparkReplay: (m: ChatMessage) => void;
+  onExpandVideo: (m: ChatMessage) => void;
+  videoShape: 'circle' | 'rounded';
+  videoRadius: number;
   onErrorTap: (m: ChatMessage) => void;
   onRetryPhoto: (m: ChatMessage) => void;
   onOpenViewer: (id: string) => void;
@@ -407,6 +713,9 @@ export default function MessageBubble(props: MessageBubbleProps) {
     onReply,
     onJump,
     onSparkReplay,
+    onExpandVideo,
+    videoShape,
+    videoRadius,
     onErrorTap,
     onRetryPhoto,
     onOpenViewer,
@@ -450,9 +759,12 @@ export default function MessageBubble(props: MessageBubbleProps) {
     suppressClickRef.current = false;
     gestureRef.current = { x: e.clientX, y: e.clientY, lock: null };
     setSnapping(false);
-    // Лонг-пресс — фото (тап занят viewer'ом) и spark (тап занят реплеем салюта).
-    // У обычного текста/голосового меню по тапу.
-    if ((m.kind === 'photo' || (m.kind === 'text' && m.spark === true)) && !m.pending) {
+    // Лонг-пресс — фото (тап занят viewer'ом), spark (тап занят реплеем)
+    // и видео (тап включает звук). У остального меню по тапу.
+    if (
+      (m.kind === 'photo' || m.kind === 'video' || (m.kind === 'text' && m.spark === true)) &&
+      !m.pending
+    ) {
       longPressRef.current = setTimeout(() => {
         longPressRef.current = null;
         gestureRef.current = null;
@@ -620,6 +932,60 @@ export default function MessageBubble(props: MessageBubbleProps) {
             );
           }
           return <VoicePlayer m={m} url={st.url} loading={false} loadError={false} onRetry={() => {}} />;
+        })()}
+        {metaNode}
+      </div>
+    ) : m.kind === 'video' ? (
+      <div className="bubble bubble-nobg">
+        {m.replyTo && (
+          <ReplyQuote
+            replyTo={m.replyTo}
+            meUid={meUid}
+            peerName={peerName}
+            visibleMap={visibleMap}
+            roomKey={roomKey}
+            onJump={onJump}
+          />
+        )}
+        {(() => {
+          const st = photos[m.id];
+          if (!st || st.status === 'loading') {
+            return (
+              <VideoBubble
+                m={m}
+                url={null}
+                loadError={false}
+                shape={videoShape}
+                radius={videoRadius}
+                onRetry={() => {}}
+                onExpand={() => {}}
+              />
+            );
+          }
+          if (st.status === 'error') {
+            return (
+              <VideoBubble
+                m={m}
+                url={null}
+                loadError
+                shape={videoShape}
+                radius={videoRadius}
+                onRetry={() => onRetryPhoto(m)}
+                onExpand={() => {}}
+              />
+            );
+          }
+          return (
+            <VideoBubble
+              m={m}
+              url={st.url}
+              loadError={false}
+              shape={videoShape}
+              radius={videoRadius}
+              onRetry={() => {}}
+              onExpand={() => onExpandVideo(m)}
+            />
+          );
         })()}
         {metaNode}
       </div>

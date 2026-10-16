@@ -13,6 +13,9 @@ export interface LocalSettings {
   bubbleGlassTheirs: boolean;
   bubbleColorMine: string | null; // null = цвет темы
   bubbleColorTheirs: string | null;
+  // Кружочки (видео): форма purely local — кроп только на фронте, в файле прямоугольник.
+  videoShape: 'circle' | 'rounded'; // круг / скруглённый квадрат
+  videoRadius: number; // радиус для 'rounded', px (8–80)
 }
 
 const KEY = 'ns-settings-v1';
@@ -25,6 +28,8 @@ export const DEFAULT_SETTINGS: LocalSettings = {
   bubbleGlassTheirs: false,
   bubbleColorMine: null,
   bubbleColorTheirs: null,
+  videoShape: 'circle',
+  videoRadius: 28,
 };
 
 export const AVATAR_COLORS = [
@@ -62,6 +67,11 @@ function load(): LocalSettings {
         typeof p.bubbleColorTheirs === 'string' && /^#[0-9a-fA-F]{6}$/.test(p.bubbleColorTheirs)
           ? p.bubbleColorTheirs
           : null,
+      videoShape: p.videoShape === 'rounded' ? 'rounded' : 'circle',
+      videoRadius:
+        typeof p.videoRadius === 'number' && Number.isFinite(p.videoRadius)
+          ? Math.min(80, Math.max(8, Math.round(p.videoRadius)))
+          : DEFAULT_SETTINGS.videoRadius,
     };
   } catch {
     return DEFAULT_SETTINGS;

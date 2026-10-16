@@ -1,4 +1,4 @@
-export type MessageKind = 'text' | 'photo' | 'voice';
+export type MessageKind = 'text' | 'photo' | 'voice' | 'video';
 
 /** Цель ответа: ссылка на родительское сообщение (см. ChatMessage.replyTo). */
 export interface ReplyTarget {

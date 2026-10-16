@@ -30,6 +30,8 @@ function Shell() {
       bubbleGlassTheirs: false,
       bubbleColorMine: null,
       bubbleColorTheirs: null,
+      videoShape: 'circle',
+      videoRadius: 28,
     });
   };
 

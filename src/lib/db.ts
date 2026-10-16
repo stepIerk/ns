@@ -14,7 +14,7 @@ export interface StoredMsg {
   ts: number; // clientTs — тот же порядок, что orderBy('clientTs')
   clientMessageId: string;
   senderId: string;
-  kind: 'text' | 'photo' | 'voice';
+  kind: 'text' | 'photo' | 'voice' | 'video';
   ciphertext?: string;
   iv?: string;
   mediaId?: string;

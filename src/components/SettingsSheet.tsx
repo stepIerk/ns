@@ -247,6 +247,44 @@ export default function SettingsSheet(p: Props) {
                 </button>
               )}
             </div>
+            <div className="set-row">
+              <div className="grow">
+                Форма кружочков
+                <div className="sub">Кроп только на этом устройстве</div>
+              </div>
+            </div>
+            <div className="set-row">
+              <div className="segmented" role="group" aria-label="Форма кружочков">
+                <button
+                  type="button"
+                  className={s.videoShape === 'circle' ? 'active' : ''}
+                  onClick={() => p.update({ videoShape: 'circle' })}
+                >
+                  Круг
+                </button>
+                <button
+                  type="button"
+                  className={s.videoShape === 'rounded' ? 'active' : ''}
+                  onClick={() => p.update({ videoShape: 'rounded' })}
+                >
+                  Квадрат
+                </button>
+              </div>
+            </div>
+            {s.videoShape === 'rounded' && (
+              <div className="set-row">
+                <div className="grow">Радиус скругления · {s.videoRadius}px</div>
+                <input
+                  type="range"
+                  min={8}
+                  max={80}
+                  step={1}
+                  value={s.videoRadius}
+                  onChange={(e) => p.update({ videoRadius: Number(e.target.value) })}
+                  aria-label="Радиус скругления кружочков"
+                />
+              </div>
+            )}
             <div className="row">
               <button className="btn" onClick={p.resetAppearance}>
                 Сбросить оформление

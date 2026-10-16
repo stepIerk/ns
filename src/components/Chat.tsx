@@ -246,6 +246,9 @@ export default function Chat({
       onSendVoice={(blob, mime, recordedMs, opts) => {
         void media.sendVoice(blob, mime, recordedMs, opts);
       }}
+      onSendVideo={(blob, mime, recordedMs, opts) => {
+        void media.sendVideo(blob, mime, recordedMs, opts);
+      }}
       onRetryPhoto={(m) => media.retryPhoto(m)}
       onOpenViewer={(id) => media.openViewer(id)}
       onCloseViewer={() => media.closeViewer()}
