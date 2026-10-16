@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { MAX_VIDEO_MS, pickVideoMime, videoConstraints, type VideoFacing } from '../lib/video';
+import {
+  AUDIO_BITS_PER_SECOND,
+  MAX_VIDEO_MS,
+  VIDEO_BITS_PER_SECOND,
+  pickVideoMime,
+  videoConstraints,
+  type VideoFacing,
+} from '../lib/video';
 
 export interface VideoTake {
   blob: Blob;
@@ -75,10 +82,20 @@ export function useVideoRecorder() {
       }
       let rec: MediaRecorder;
       try {
-        rec = new MediaRecorder(st, { mimeType: mime });
+        // Битрейт капаем (см. lib/video): у кого не поддерживается — упадёт
+        // в catch и запишем без капа (файл больше, но работает везде).
+        rec = new MediaRecorder(st, {
+          mimeType: mime,
+          videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
+          audioBitsPerSecond: AUDIO_BITS_PER_SECOND,
+        });
       } catch {
-        st.getTracks().forEach((t) => t.stop());
-        return { ok: false, message: 'Не удалось начать запись' };
+        try {
+          rec = new MediaRecorder(st, { mimeType: mime });
+        } catch {
+          st.getTracks().forEach((t) => t.stop());
+          return { ok: false, message: 'Не удалось начать запись' };
+        }
       }
       chunksRef.current = [];
       finishedRef.current = false;
@@ -154,7 +171,7 @@ export function useVideoRecorder() {
     for (const mode of [{ exact: next }, next] as const) {
       try {
         tmp = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: mode, width: { ideal: 720 }, height: { ideal: 720 } },
+          video: { facingMode: mode, width: { ideal: 480 }, height: { ideal: 480 } },
           audio: false,
         });
         break;

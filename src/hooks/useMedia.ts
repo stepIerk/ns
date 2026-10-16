@@ -46,23 +46,41 @@ async function downloadCipher(m: ChatMessage): Promise<ArrayBuffer> {
   if (!m.driveFileId || !m.iv || total <= 0 || total > MAX_PHOTO_BYTES) {
     throw new Error('bad photo metadata');
   }
-  const parts: Uint8Array[] = [];
-  let received = 0;
+  const ranges: { start: number; end: number }[] = [];
   for (let start = 0; start < total; start += DOWNLOAD_CHUNK) {
-    const end = Math.min(start + DOWNLOAD_CHUNK - 1, total - 1);
-    const { data } = await authedPost<{ data: string; total: number }>(
-      '/api/media/download',
-      {
-        driveFileId: m.driveFileId,
-        start,
-        end,
-      },
-      { timeoutMs: MEDIA_TIMEOUT_MS },
-    );
-    const chunk = b64ToBytes(data);
-    parts.push(chunk);
-    received += chunk.length;
+    ranges.push({ start, end: Math.min(start + DOWNLOAD_CHUNK - 1, total - 1) });
   }
+  // Чанки качаем параллельно (пул 3): было строго последовательно —
+  // каждый мегабайт ждал полного round-trip через функцию.
+  // Закачка resumable-загрузке это не грозит (она только на upload,
+  // там порядок важен — его не трогаем).
+  const CONCURRENCY = 3;
+  const parts: Uint8Array[] = new Array(ranges.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < ranges.length) {
+      const i = next;
+      next += 1;
+      const r = ranges[i]!;
+      const { data } = await authedPost<{ data: string; total: number }>(
+        '/api/media/download',
+        {
+          driveFileId: m.driveFileId,
+          start: r.start,
+          end: r.end,
+        },
+        { timeoutMs: MEDIA_TIMEOUT_MS },
+      );
+      const chunk = b64ToBytes(data);
+      if (chunk.length !== r.end - r.start + 1) throw new Error('chunk size mismatch');
+      parts[i] = chunk;
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, ranges.length) }, () => worker()),
+  );
+  let received = 0;
+  for (const p of parts) received += p.length;
   const cipher = new Uint8Array(received);
   let off = 0;
   for (const p of parts) {
