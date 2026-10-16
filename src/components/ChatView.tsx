@@ -8,6 +8,7 @@ import {
   type CSSProperties,
 } from 'react';
 import {
+  ArrowDown,
   ArrowUp,
   ChevronUp,
   EllipsisVertical,
@@ -347,7 +348,6 @@ export default function ChatView(p: ChatViewProps) {
     if (g?.started && recPhaseRef.current !== 'locked') recCancel();
   };
 
-  const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -357,6 +357,17 @@ export default function ChatView(p: ChatViewProps) {
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingOlderRef = useRef(false);
   const bootedRef = useRef(false);
+  // Кнопка «Вниз»: видна, когда читают историю; бейдж — счётчик новых.
+  const BOTTOM_PX = 120;
+  const [showDown, setShowDown] = useState(false);
+  const [newCount, setNewCount] = useState(0);
+  const atBottomRef = useRef(true);
+  const prevLastRef = useRef<{ id: string; cmid: string } | null>(null);
+  const goBottom = useCallback(() => {
+    setNewCount(0);
+    const el = listRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, []);
   // Окно рендера: DOM держим маленьким (iPhone), полный объём — в IDB/state.
   const [renderCount, setRenderCount] = useState(120);
   const RENDER_STEP = 80;
@@ -534,16 +545,53 @@ export default function ChatView(p: ChatViewProps) {
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    // Не дёргаем ленту, если пользователь читает старое.
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
-    if (!bootedRef.current || nearBottom) {
-      bottomRef.current?.scrollIntoView({
-        behavior: bootedRef.current ? 'smooth' : 'auto',
-        block: 'end',
-      });
+    // Позиция чтения: внизу ли пользователь (кнопка «Вниз» + бейдж новых).
+    const onScroll = () => {
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const at = dist < BOTTOM_PX;
+      atBottomRef.current = at;
+      setShowDown((v) => (v === !at ? v : !at));
+      if (at) setNewCount((c) => (c === 0 ? c : 0));
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Автопрокрутка в стиле TG:
+  // - первая загрузка — мгновенно вниз (прямой scrollTop, не scrollIntoView);
+  // - новые внизу: мы внизу (или свои) — плавно вниз, иначе бейдж на кнопке;
+  // - догрузка истории вверх / рост окна рендера (низ тот же) — не трогаем.
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el || visible.length === 0) return;
+    const last = visible[visible.length - 1]!;
+    const prev = prevLastRef.current;
+    if (!bootedRef.current) {
       bootedRef.current = true;
+      prevLastRef.current = { id: last.id, cmid: last.clientMessageId };
+      el.scrollTop = el.scrollHeight;
+      return;
     }
-  }, [visible.length]);
+    if (prev && prev.id === last.id) return;
+    prevLastRef.current = { id: last.id, cmid: last.clientMessageId };
+    if (last.senderId === meUid || atBottomRef.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    } else {
+      // Сколько новых после прошлого низа (матч по id и clientMessageId —
+      // покрывает замену local-echo на серверное: тогда новых 0).
+      let n = 1;
+      if (prev) {
+        for (let i = visible.length - 1; i >= 0; i -= 1) {
+          const mm = visible[i]!;
+          if (mm.id === prev.id || mm.clientMessageId === prev.cmid) {
+            n = visible.length - 1 - i;
+            break;
+          }
+        }
+      }
+      if (n > 0) setNewCount((c) => c + n);
+    }
+  }, [visible, meUid]);
 
   // Escape закрывает шторку, меню реакций и spark-панель.
   useEffect(() => {
@@ -921,8 +969,16 @@ export default function ChatView(p: ChatViewProps) {
             </div>
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
+
+      {showDown && (
+        <button className="to-bottom" onClick={goBottom} aria-label="Вниз к новым сообщениям">
+          <ArrowDown size={20} />
+          {newCount > 0 && (
+            <span className="down-badge">{newCount > 99 ? '99+' : newCount}</span>
+          )}
+        </button>
+      )}
 
       <form className="composer" ref={composerRef} onSubmit={(e) => void onSubmit(e)}>
         <input
