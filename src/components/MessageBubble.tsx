@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   CheckCheck,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Copy,
   Loader2,
@@ -471,17 +473,25 @@ function VideoBubble({ m, url, loadError, shape, radius, onRetry, onExpand }: Vi
   );
 }
 
-// ---------- Театр кружка: большой просмотр с перемоткой ----------
+// ---------- Театр кружка: листалка с живым следованием ----------
 
-interface VideoTheaterProps {
+interface TheaterItem {
   m: ChatMessage;
-  url: string;
-  shape: 'circle' | 'rounded';
-  radius: number;
-  onClose: () => void;
+  url: string | null;
 }
 
-export function VideoTheater({ m, url, shape, radius, onClose }: VideoTheaterProps) {
+interface TheaterSlideProps {
+  item: TheaterItem;
+  shape: 'circle' | 'rounded';
+  radius: number;
+  active: boolean;
+  consumeSwipe: () => boolean;
+  onNeedUrl: (id: string) => void;
+}
+
+// Один слайд: плеер + свои контролы (состояние живёт в слайде).
+function TheaterSlide({ item, shape, radius, active, consumeSwipe, onNeedUrl }: TheaterSlideProps) {
+  const { m, url } = item;
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
   const scrubbingRef = useRef(false);
@@ -496,10 +506,25 @@ export function VideoTheater({ m, url, shape, radius, onClose }: VideoTheaterPro
     return totalMs > 0 ? totalMs / 1000 : 0;
   };
 
-  // Открытие идёт из жеста: пробуем сразу со звуком, иначе fallback в mute.
+  // Url может догрузиться позже (кружок вне окна рендера) — просим докачать.
+  useEffect(() => {
+    if (!url) onNeedUrl(m.id);
+  }, [url, m.id, onNeedUrl]);
+
+  // Играет только активный слайд; остальные стоят на паузе.
   useEffect(() => {
     const v = videoRef.current;
-    if (!v) return;
+    if (!v || !url) return;
+    if (!active) {
+      if (!v.paused) {
+        try {
+          v.pause();
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
     try {
       v.muted = false;
     } catch {
@@ -523,7 +548,14 @@ export function VideoTheater({ m, url, shape, radius, onClose }: VideoTheaterPro
         );
       },
     );
-  }, [url]);
+  }, [url, active]);
+
+  // Тоггл тапом; клик после свайпа гасим (флаг ставит шелл выше,
+  // до корня он не доплывает из-за stopPropagation на плеере).
+  const guardedToggle = () => {
+    if (consumeSwipe()) return;
+    togglePlay();
+  };
 
   const togglePlay = () => {
     const v = videoRef.current;
@@ -605,42 +637,49 @@ export function VideoTheater({ m, url, shape, radius, onClose }: VideoTheaterPro
   };
 
   return (
-    <div className="video-theater" onClick={onClose}>
-      <button className="vtheater-close" onClick={onClose} aria-label="Закрыть">
-        <X size={20} />
-      </button>
+    <>
       <div
         className="video-stage-player"
         style={{ borderRadius: shape === 'circle' ? '50%' : `${radius * 2}px` }}
         onClick={(e) => e.stopPropagation()}
       >
-        <video
-          ref={videoRef}
-          src={url}
-          playsInline
-          preload="auto"
-          disablePictureInPicture
-          onClick={togglePlay}
-          onTimeUpdate={(e) => {
-            const v = e.currentTarget;
-            const base = baseOf(v);
-            if (base > 0 && !scrubbingRef.current) setProgress(Math.min(1, v.currentTime / base));
-          }}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onEnded={() => {
-            setPlaying(false);
-            setProgress(1);
-          }}
-        />
-        {!playing && (
-          <button className="vtheater-bigplay" onClick={togglePlay} aria-label="Смотреть">
+        {url ? (
+          <video
+            ref={videoRef}
+            src={url}
+            playsInline
+            preload="auto"
+            disablePictureInPicture
+            onClick={guardedToggle}
+            onTimeUpdate={(e) => {
+              const v = e.currentTarget;
+              const base = baseOf(v);
+              if (base > 0 && !scrubbingRef.current) setProgress(Math.min(1, v.currentTime / base));
+            }}
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onEnded={() => {
+              setPlaying(false);
+              setProgress(1);
+            }}
+          />
+        ) : (
+          <div className="vtheater-loading" aria-label="Загрузка">
+            <Loader2 size={30} className="spin" />
+          </div>
+        )}
+        {url && !playing && (
+          <button className="vtheater-bigplay" onClick={guardedToggle} aria-label="Смотреть">
             <Play size={34} />
           </button>
         )}
       </div>
-      <div className="vtheater-controls" onClick={(e) => e.stopPropagation()}>
-        <button className="vtheater-btn" onClick={togglePlay} aria-label={playing ? 'Пауза' : 'Смотреть'}>
+      <div
+        className="vtheater-controls"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <button className="vtheater-btn" onClick={guardedToggle} aria-label={playing ? 'Пауза' : 'Смотреть'}>
           {playing ? <Pause size={19} /> : <Play size={19} />}
         </button>
         <span className="vtheater-time">{formatVoiceTime(progress * totalMs)}</span>
@@ -660,6 +699,220 @@ export function VideoTheater({ m, url, shape, radius, onClose }: VideoTheaterPro
         <button className="vtheater-btn" onClick={toggleMute} aria-label={muted ? 'Со звуком' : 'Без звука'}>
           {muted ? <VolumeX size={19} /> : <Volume2 size={19} />}
         </button>
+      </div>
+    </>
+  );
+}
+
+interface VideoTheaterProps {
+  ids: string[];
+  idx: number;
+  getItem: (id: string) => { m: ChatMessage; url: string | null } | null;
+  shape: 'circle' | 'rounded';
+  radius: number;
+  onIdx: (i: number) => void;
+  onNeedUrl: (id: string) => void;
+  onClose: () => void;
+}
+
+// Шелл-листалка: трек из трёх слайдов (назад/текущий/вперёд) едет за пальцем,
+// на релизе — snap к ближайшему. Тап без сдвига — закрыть.
+export function VideoTheater({
+  ids,
+  idx,
+  getItem,
+  shape,
+  radius,
+  onIdx,
+  onNeedUrl,
+  onClose,
+}: VideoTheaterProps) {
+  const viewRef = useRef<HTMLDivElement | null>(null);
+  const [vw, setVw] = useState(0);
+  const [drag, setDrag] = useState(0);
+  const [snapping, setSnapping] = useState(false);
+  const navRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const suppressClickRef = useRef(false);
+  const snapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (snapTimer.current) clearTimeout(snapTimer.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const el = viewRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const sync = () => setVw(el.clientWidth);
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const windowIds = useMemo(() => {
+    const out: string[] = [];
+    if (idx > 0) out.push(ids[idx - 1]!);
+    out.push(ids[idx]!);
+    if (idx < ids.length - 1) out.push(ids[idx + 1]!);
+    return out;
+  }, [ids, idx]);
+  const curPos = idx > 0 ? 1 : 0;
+
+  // Флаг свайпа гасит ближайший клик (тоггл play / закрытие).
+  const consumeSwipe = () => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return true;
+    }
+    return false;
+  };
+
+  const snapBack = () => {
+    if (snapTimer.current) clearTimeout(snapTimer.current);
+    setSnapping(true);
+    setDrag(0);
+    snapTimer.current = setTimeout(() => setSnapping(false), 250);
+  };
+
+  const animateTo = (newIdx: number) => {
+    if (newIdx === idx || newIdx < 0 || newIdx >= ids.length) return;
+    const W = viewRef.current?.clientWidth ?? 0;
+    if (W <= 0) {
+      onIdx(newIdx);
+      return;
+    }
+    if (snapTimer.current) clearTimeout(snapTimer.current);
+    setSnapping(true);
+    setDrag((idx - newIdx) * W);
+    snapTimer.current = setTimeout(() => {
+      setSnapping(false);
+      setDrag(0);
+      onIdx(newIdx);
+    }, 250);
+  };
+
+  const onRootDown = (e: React.PointerEvent) => {
+    if (!e.isPrimary || snapping) return;
+    suppressClickRef.current = false;
+    navRef.current = { x: e.clientX, y: e.clientY, moved: false };
+  };
+  const onRootMove = (e: React.PointerEvent) => {
+    const n = navRef.current;
+    if (!n || !e.isPrimary || snapping) return;
+    const dx = e.clientX - n.x;
+    const dy = e.clientY - n.y;
+    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) n.moved = true;
+    if (Math.abs(dx) < Math.abs(dy)) return; // вертикаль не тянем
+    const W = viewRef.current?.clientWidth ?? 0;
+    let d = dx;
+    const atStart = idx === 0;
+    const atEnd = idx === ids.length - 1;
+    if ((d > 0 && atStart) || (d < 0 && atEnd)) d *= 0.35;
+    if (W > 0) d = Math.max(-W * 1.1, Math.min(W * 1.1, d));
+    setDrag(d);
+  };
+  const onRootUp = (e: React.PointerEvent) => {
+    const n = navRef.current;
+    navRef.current = null;
+    if (!n || !n.moved || snapping) return;
+    const dx = e.clientX - n.x;
+    const dy = e.clientY - n.y;
+    suppressClickRef.current = true;
+    const W = viewRef.current?.clientWidth ?? 0;
+    const th = Math.max(70, W * 0.15);
+    if (Math.abs(dx) > th && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      if (dx < 0 && idx < ids.length - 1) animateTo(idx + 1);
+      else if (dx > 0 && idx > 0) animateTo(idx - 1);
+      else snapBack();
+    } else {
+      snapBack();
+    }
+  };
+  const onRootClick = () => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    onClose();
+  };
+
+  return (
+    <div
+      className="video-theater"
+      onPointerDown={onRootDown}
+      onPointerMove={onRootMove}
+      onPointerUp={onRootUp}
+      onPointerCancel={() => {
+        navRef.current = null;
+      }}
+      onClick={onRootClick}
+    >
+      <button
+        className="vtheater-close"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        aria-label="Закрыть"
+      >
+        <X size={20} />
+      </button>
+      {ids.length > 1 && (
+        <span className="vtheater-count" aria-hidden>
+          {idx + 1} / {ids.length}
+        </span>
+      )}
+      {idx > 0 && (
+        <button
+          className="vtheater-nav prev"
+          onClick={(e) => {
+            e.stopPropagation();
+            animateTo(idx - 1);
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          aria-label="Предыдущий кружок"
+        >
+          <ChevronLeft size={26} />
+        </button>
+      )}
+      {idx < ids.length - 1 && (
+        <button
+          className="vtheater-nav next"
+          onClick={(e) => {
+            e.stopPropagation();
+            animateTo(idx + 1);
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          aria-label="Следующий кружок"
+        >
+          <ChevronRight size={26} />
+        </button>
+      )}
+      <div className="vtheater-viewport" ref={viewRef}>
+        <div
+          className={`vtheater-track${snapping ? ' snap' : ''}`}
+          style={{ transform: `translateX(${-vw * curPos + drag}px)` }}
+        >
+          {windowIds.map((id, i) => {
+            const it = getItem(id);
+            if (!it) return <div className="vtheater-slide" key={id} />;
+            return (
+              <div className="vtheater-slide" key={id}>
+                <TheaterSlide
+                  item={it}
+                  shape={shape}
+                  radius={radius}
+                  active={i === curPos}
+                  consumeSwipe={consumeSwipe}
+                  onNeedUrl={onNeedUrl}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

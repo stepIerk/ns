@@ -10,12 +10,12 @@ import {
 import {
   ArrowDown,
   ArrowUp,
-  ChevronUp,
   EllipsisVertical,
   Heart,
   Loader2,
   Lock,
   Mic,
+  MoveLeft,
   Plus,
   Square,
   SwitchCamera,
@@ -32,9 +32,9 @@ import { sparkMarkSeen, sparkWasSeen } from '../lib/db';
 import type { LocalSettings } from '../lib/settings';
 import { SPARK_SET, effectFor, type SparkEffect } from '../lib/spark';
 import {
-  CANCEL_DX,
   HOLD_TO_RECORD_MS,
   LIVE_BARS,
+  LOCK_DX,
   LOCK_DY,
   MIN_VOICE_MS,
   formatVoiceTime,
@@ -223,7 +223,6 @@ export default function ChatView(p: ChatViewProps) {
   // Тап по кнопке — смена mic/cam; холд mic — запись; слайд вверх — lock,
   // слайд влево — отмена. Отпустил в holding — отправка; в locked пишем дальше.
   const [recMode, setRecMode] = useState<'mic' | 'cam'>('mic');
-  const [cancelArmed, setCancelArmed] = useState(false);
   const {
     phase: recPhase,
     elapsedMs: recElapsed,
@@ -264,6 +263,8 @@ export default function ChatView(p: ChatViewProps) {
   const recGesture = useRef<{
     x: number;
     y: number;
+    dx: number;
+    dy: number;
     timer?: ReturnType<typeof setTimeout>;
     started: boolean;
     kind: 'voice' | 'video' | null;
@@ -283,9 +284,22 @@ export default function ChatView(p: ChatViewProps) {
     }
   };
 
+  // Тап по той же кнопке в locked — стоп+отправка (отдельной кнопки нет).
+  const stopArmedRef = useRef<'voice' | 'video' | null>(null);
+  // Кнопка записи едет за пальцем: элемент + сброс инлайновых стилей.
+  const recBtnRef = useRef<HTMLButtonElement | null>(null);
+  const resetRecBtn = () => {
+    const btn = recBtnRef.current;
+    recBtnRef.current = null;
+    if (!btn) return;
+    btn.style.transition = '';
+    btn.style.transform = '';
+    btn.style.background = '';
+    btn.style.color = '';
+  };
+
   const handleTake = useCallback(
     (take: VoiceTake | null) => {
-      setCancelArmed(false);
       if (!take) return;
       if (take.recordedMs < MIN_VOICE_MS || take.blob.size === 0) {
         notify('Слишком короткое — удерживай кнопку дольше');
@@ -304,7 +318,6 @@ export default function ChatView(p: ChatViewProps) {
 
   const handleTakeVideo = useCallback(
     (take: VideoTake | null) => {
-      setCancelArmed(false);
       if (!take) return;
       if (take.recordedMs < MIN_VIDEO_MS || take.blob.size === 0) {
         notify('Слишком короткий кружок — удерживай кнопку дольше');
@@ -344,16 +357,32 @@ export default function ChatView(p: ChatViewProps) {
     setSparkOpen(false);
     if (photoBusy || busy) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    // В locked игнорим кнопку (там свои trash/send), иначе тап сменит режим.
+    // Locked: тап по ТОЙ ЖЕ кнопке — стоп+отправка (взводим, отпустит — уйдёт).
+    if (vdPhaseRef.current === 'locked' || recPhaseRef.current === 'locked') {
+      stopArmedRef.current = vdPhaseRef.current === 'locked' ? 'video' : 'voice';
+      recBtnRef.current = e.currentTarget;
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    // В holding игнорим (там палец уже пишет).
     if (recPhaseRef.current !== 'idle' || vdPhaseRef.current !== 'idle') return;
+    recBtnRef.current = e.currentTarget;
+    // Без transition на время жеста — иначе кнопка отстаёт от пальца.
+    e.currentTarget.style.transition = 'none';
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
       // ignore
     }
-    const g = { x: e.clientX, y: e.clientY, started: false, kind: null } as {
+    const g = { x: e.clientX, y: e.clientY, dx: 0, dy: 0, started: false, kind: null } as {
       x: number;
       y: number;
+      dx: number;
+      dy: number;
       timer?: ReturnType<typeof setTimeout>;
       started: boolean;
       kind: 'voice' | 'video' | null;
@@ -364,51 +393,102 @@ export default function ChatView(p: ChatViewProps) {
       const isVideo = recMode === 'cam';
       g.kind = isVideo ? 'video' : 'voice';
       g.started = true;
-      inputRef.current?.blur();
-      setTypingActive(false);
-      if (isVideo) {
-        void vdStart((take) => handleTakeVideoRef.current(take)).then((r) => {
-          if (!r.ok) {
-            if (recGesture.current === g) recGesture.current = null;
-            notify(r.message ?? 'Не удалось начать запись');
-          }
-        });
-        return;
-      }
-      void recStart((take) => handleTakeRef.current(take)).then((r) => {
-        if (!r.ok) {
-          if (recGesture.current === g) recGesture.current = null;
-          notify(r.message ?? 'Не удалось начать запись');
-        }
+      // Палец уже уведён влево/вверх — стартуем сразу в lock.
+      beginRecord(isVideo, g.dx < LOCK_DX || g.dy < LOCK_DY, () => {
+        resetRecBtn();
+        if (recGesture.current === g) recGesture.current = null;
       });
     }, HOLD_TO_RECORD_MS);
   };
 
+  // Старт записи (из холда или из быстрого свайпа). instantLock — сразу lock
+  // после успешного старта (палец уже на lock-позиции).
+  const beginRecord = useCallback(
+    (isVideo: boolean, instantLock: boolean, onFail?: () => void) => {
+      inputRef.current?.blur();
+      setTypingActive(false);
+      const start = isVideo ? vdStart : recStart;
+      const lockFn = isVideo ? vdLock : recLock;
+      const phaseRef = isVideo ? vdPhaseRef : recPhaseRef;
+      const doneRef = isVideo ? handleTakeVideoRef : handleTakeRef;
+      void start((take) => doneRef.current(take)).then((r) => {
+        if (!r.ok) {
+          notify(r.message ?? 'Не удалось начать запись');
+          onFail?.();
+          return;
+        }
+        if (instantLock) {
+          // lock() — updater holding→locked: безопасен без проверки фазы,
+          // mirror ставим синхронно (эффект-зеркало может не успеть).
+          lockFn();
+          phaseRef.current = 'locked';
+          resetRecBtn();
+          buzzLocal(15);
+        }
+      });
+    },
+    [notify, setTypingActive, vdStart, vdLock, recStart, recLock],
+  );
+
   const onRecMove = (e: React.PointerEvent<HTMLButtonElement>) => {
     const g = recGesture.current;
+    if (!g || !e.isPrimary) return;
+    // Смещение копим всегда — нужно и до старта (быстрый свайп в lock).
+    g.dx = e.clientX - g.x;
+    g.dy = e.clientY - g.y;
+    // Кнопка едет за пальцем + плавно краснеет к порогу lock'а.
+    // После lock'а пружиной назад (сброс ниже) — дальше не тянем.
+    const btn = recBtnRef.current;
+    const lockedNow =
+      (g.kind === 'video' ? vdPhaseRef.current : recPhaseRef.current) === 'locked';
+    if (btn && !lockedNow) {
+      const cx = Math.max(-80, Math.min(0, g.dx));
+      const cy = Math.max(-80, Math.min(0, g.dy));
+      const p = Math.min(1, Math.max(Math.abs(g.dx), Math.abs(g.dy)) / 60);
+      btn.style.transform = `translate(${cx}px, ${cy}px) scale(${(1 + p * 0.12).toFixed(3)})`;
+      btn.style.background = `rgba(229, 72, 77, ${(p * 0.85).toFixed(2)})`;
+      btn.style.color = p > 0.45 ? '#fff' : '';
+    }
     // Фазу читаем из ref: после lock() рендер может не успеть до следующих событий.
     const phaseRef = g?.kind === 'video' ? vdPhaseRef : recPhaseRef;
     if (!g?.started || phaseRef.current !== 'holding') return;
-    const dx = e.clientX - g.x;
-    const dy = e.clientY - g.y;
-    const armed = dx < CANCEL_DX;
-    setCancelArmed((prev) => (prev === armed ? prev : armed));
-    if (dy < LOCK_DY) {
+    const dx = g.dx;
+    const dy = g.dy;
+    // Lock слайдом ВЛЕВО (основной) или вверх (запасной). Слайда-отмены больше
+    // нет: discard — только тап по корзине (в locked) — всё по одной кнопке.
+    if (dx < LOCK_DX || dy < LOCK_DY) {
       if (g.kind === 'video') vdLock();
       else recLock();
       // Синхронно: эффект-зеркало догонит позже, а pointerup может прийти раньше.
       phaseRef.current = 'locked';
-      setCancelArmed(false);
+      resetRecBtn();
       buzzLocal(15);
     }
   };
 
-  const onRecUp = (e: React.PointerEvent<HTMLButtonElement>) => {
+  const onRecUp = () => {
+    resetRecBtn();
+    // Стоп тапом по той же кнопке (взведено в onRecDown).
+    if (stopArmedRef.current) {
+      const kind = stopArmedRef.current;
+      stopArmedRef.current = null;
+      if (kind === 'video') vdFinish(true);
+      else recFinish(true);
+      return;
+    }
     const g = recGesture.current;
     recGesture.current = null;
     if (g?.timer) clearTimeout(g.timer);
     if (!g) return;
     if (!g.started) {
+      // Быстрый свайп влево/вверх — старт сразу в lock (без холда).
+      // Вызываем прямо в жесте (pointerup): iOS даёт getUserMedia в активации.
+      if (g.dx < LOCK_DX || g.dy < LOCK_DY) {
+        const isVideo = recMode === 'cam';
+        recGesture.current = null;
+        beginRecord(isVideo, true);
+        return;
+      }
       // Быстрый тап — смена режима mic/cam.
       setRecMode((m) => (m === 'mic' ? 'cam' : 'mic'));
       buzzLocal(10);
@@ -417,17 +497,14 @@ export default function ChatView(p: ChatViewProps) {
     const isVideo = g.kind === 'video';
     const phaseRef = isVideo ? vdPhaseRef : recPhaseRef;
     if (phaseRef.current === 'locked') return; // палец отпустили — пишем дальше
-    if (e.clientX - g.x < CANCEL_DX) {
-      if (isVideo) vdCancel();
-      else recCancel();
-    } else if (isVideo) {
-      vdFinish(true);
-    } else {
-      recFinish(true);
-    }
+    // Отпустил в holding — всегда отправка (отмены слайдом нет).
+    if (isVideo) vdFinish(true);
+    else recFinish(true);
   };
 
   const onRecCancel = () => {
+    resetRecBtn();
+    stopArmedRef.current = null;
     const g = recGesture.current;
     recGesture.current = null;
     if (g?.timer) clearTimeout(g.timer);
@@ -729,31 +806,57 @@ export default function ChatView(p: ChatViewProps) {
     };
   }, []);
 
-  // Театр кружка: большой просмотр с перемоткой (только готовое видео).
-  // theaterMsg/theaterUrl считаем внизу у рендера (нужен visibleMap).
-  const [videoTheaterId, setVideoTheaterId] = useState<string | null>(null);
+  // Театр кружка: листалка по всем загруженным видео (не только соседним).
+  const [videoTheaterIds, setVideoTheaterIds] = useState<string[] | null>(null);
+  const [videoTheaterIdx, setVideoTheaterIdx] = useState(0);
   const openVideoTheater = useCallback(
     (m: ChatMessage) => {
       const st = photos[m.id];
-      if (st?.status === 'ready') setVideoTheaterId(m.id);
+      if (st?.status !== 'ready') return;
+      const ids = visibleRef.current
+        .filter((v) => v.kind === 'video' && !v.pending)
+        .map((v) => v.id);
+      const idx = ids.indexOf(m.id);
+      if (idx < 0) return;
+      setVideoTheaterIds(ids);
+      setVideoTheaterIdx(idx);
     },
     [photos],
+  );
+  const getTheaterItem = useCallback(
+    (id: string) => {
+      const mm = visibleRef.current.find((v) => v.id === id);
+      if (!mm) return null;
+      const st = photos[mm.id];
+      return {
+        m: mm,
+        url: st?.status === 'ready' ? (st as { url: string }).url : null,
+      };
+    },
+    [photos],
+  );
+  const needTheaterUrl = useCallback(
+    (id: string) => {
+      const mm = visibleRef.current.find((v) => v.id === id);
+      if (mm) ensurePhotos([mm]);
+    },
+    [ensurePhotos],
   );
 
   // Escape закрывает шторку, меню реакций, spark-панель и театр кружка.
   useEffect(() => {
-    if (!sheetOpen && !menuFor && !sparkOpen && !videoTheaterId) return;
+    if (!sheetOpen && !menuFor && !sparkOpen && !videoTheaterIds) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setSheetOpen(false);
         setMenuFor(null);
         setSparkOpen(false);
-        setVideoTheaterId(null);
+        setVideoTheaterIds(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [sheetOpen, menuFor, sparkOpen, videoTheaterId]);
+  }, [sheetOpen, menuFor, sparkOpen, videoTheaterIds]);
 
   const onSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -814,12 +917,6 @@ export default function ChatView(p: ChatViewProps) {
     }
     return map;
   }, [visible]);
-
-  // Театр кружка: сообщение + готовый url (иначе null — не монтируем).
-  const theaterMsg = videoTheaterId ? visibleMap.get(videoTheaterId) : undefined;
-  const theaterState = theaterMsg ? photos[theaterMsg.id] : undefined;
-  const theaterUrl =
-    theaterState?.status === 'ready' ? (theaterState as { url: string }).url : null;
 
   // Сниппет черновика ответа (синхронно из окна; фото/вне окна — подпись).
   const draftParent = replyDraft
@@ -1163,7 +1260,12 @@ export default function ChatView(p: ChatViewProps) {
         </div>
       )}
 
-      <form className="composer" ref={composerRef} onSubmit={(e) => void onSubmit(e)}>
+      <form
+        className="composer"
+        ref={composerRef}
+        onSubmit={(e) => void onSubmit(e)}
+        onContextMenu={(e) => e.preventDefault()}
+      >
         <input
           ref={fileRef}
           type="file"
@@ -1231,7 +1333,7 @@ export default function ChatView(p: ChatViewProps) {
             <div className="rec-ui">
               <button
                 type="button"
-                className={`rec-trash${cancelArmed ? ' armed' : ''}`}
+                className="rec-trash"
                 onPointerDown={(e) => e.preventDefault()}
                 onClick={() => vdCancel()}
                 title="Удалить запись"
@@ -1251,29 +1353,16 @@ export default function ChatView(p: ChatViewProps) {
               >
                 <SwitchCamera size={19} />
               </button>
-              {vdPhase === 'locked' ? (
-                <button
-                  type="button"
-                  className="send-btn"
-                  onPointerDown={(e) => e.preventDefault()}
-                  onClick={() => vdFinish(true)}
-                  title="Остановить и отправить"
-                  aria-label="Остановить и отправить"
-                >
-                  <Square size={15} />
-                </button>
-              ) : (
-                <span className="rec-lock-hint" aria-hidden>
-                  <Lock size={12} />
-                  <ChevronUp size={15} />
-                </span>
-              )}
+              <span className="rec-lock-hint" aria-hidden title="Свайп влево — зафиксировать">
+                <Lock size={12} />
+                <MoveLeft size={15} />
+              </span>
             </div>
           ) : (
             <div className="rec-ui">
             <button
               type="button"
-              className={`rec-trash${cancelArmed ? ' armed' : ''}`}
+              className="rec-trash"
               onPointerDown={(e) => e.preventDefault()}
               onClick={() => recCancel()}
               title="Удалить запись"
@@ -1288,23 +1377,10 @@ export default function ChatView(p: ChatViewProps) {
                 <span key={i} />
               ))}
             </div>
-            {recPhase === 'locked' ? (
-              <button
-                type="button"
-                className="send-btn"
-                onPointerDown={(e) => e.preventDefault()}
-                onClick={() => recFinish(true)}
-                title="Остановить и отправить"
-                aria-label="Остановить и отправить"
-              >
-                <Square size={15} />
-              </button>
-            ) : (
-              <span className="rec-lock-hint" aria-hidden>
-                <Lock size={12} />
-                <ChevronUp size={15} />
-              </span>
-            )}
+            <span className="rec-lock-hint" aria-hidden title="Свайп влево — зафиксировать">
+              <Lock size={12} />
+              <MoveLeft size={15} />
+            </span>
             </div>
           )
         ) : sparkOpen ? (
@@ -1375,10 +1451,28 @@ export default function ChatView(p: ChatViewProps) {
             onPointerUp={onRecUp}
             onPointerCancel={onRecCancel}
             onContextMenu={(e) => e.preventDefault()}
-            title={recMode === 'mic' ? 'Голосовое (удерживай)' : 'Видео (скоро)'}
-            aria-label={recMode === 'mic' ? 'Записать голосовое' : 'Записать видео'}
+            title={
+              recPhase === 'locked' || vdPhase === 'locked'
+                ? 'Остановить и отправить'
+                : recMode === 'mic'
+                  ? 'Голосовое (удерживай, влево — lock)'
+                  : 'Кружок (удерживай, влево — lock)'
+            }
+            aria-label={
+              recPhase === 'locked' || vdPhase === 'locked'
+                ? 'Остановить и отправить'
+                : recMode === 'mic'
+                  ? 'Записать голосовое'
+                  : 'Записать кружок'
+            }
           >
-            {recMode === 'mic' ? <Mic size={20} /> : <Video size={20} />}
+            {recPhase === 'locked' || vdPhase === 'locked' ? (
+              <Square size={18} />
+            ) : recMode === 'mic' ? (
+              <Mic size={20} />
+            ) : (
+              <Video size={20} />
+            )}
           </button>
         )}
       </form>
@@ -1408,14 +1502,16 @@ export default function ChatView(p: ChatViewProps) {
         </div>
       )}
 
-      {theaterMsg && theaterUrl && (
+      {videoTheaterIds && (
         <VideoTheater
-          key={theaterMsg.id}
-          m={theaterMsg}
-          url={theaterUrl}
+          ids={videoTheaterIds}
+          idx={Math.min(videoTheaterIdx, videoTheaterIds.length - 1)}
+          getItem={getTheaterItem}
           shape={settings.videoShape}
           radius={settings.videoRadius}
-          onClose={() => setVideoTheaterId(null)}
+          onIdx={setVideoTheaterIdx}
+          onNeedUrl={needTheaterUrl}
+          onClose={() => setVideoTheaterIds(null)}
         />
       )}
 

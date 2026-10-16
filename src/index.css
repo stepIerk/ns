@@ -60,6 +60,7 @@ body {
   height: 100vh;
   overflow: hidden;
   overscroll-behavior: none;
+  user-select: none;
 }
 
 body {
@@ -903,6 +904,23 @@ input[type='color'].colorwell {
 
 /* Черновик ответа над полем ввода (внутри композера — высота подхватится замером). */
 .composer { flex-wrap: wrap; }
+
+/* Во время записи и свайпов iOS норовит выделить текст / показать callout —
+   давим на корню (поле ввода — исключение, ему выделение нужно). */
+.composer,
+.rec-ui,
+.rec-btn,
+.vrec-stage,
+.spark-panel,
+.to-bottom {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.composer-input {
+  -webkit-user-select: text;
+  user-select: text;
+}
 .reply-draft {
   flex: 1 1 100%;
   display: flex;
@@ -1176,6 +1194,12 @@ input[type='color'].colorwell {
   padding-bottom: 110px; /* низ под композером (он всегда сверху) */
   background: rgba(0, 0, 0, 0.88);
   animation: vrec-stage-in 0.2s ease-out;
+  /* Без этого iOS перехватывает горизонтальный свайп (pointercancel)
+     и трек не едет. Внутри модалки нативных скроллов нет. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .vtheater-close {
   position: absolute;
@@ -1189,6 +1213,39 @@ input[type='color'].colorwell {
   display: inline-flex; align-items: center; justify-content: center;
   cursor: pointer;
 }
+.vtheater-count {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  left: 12px;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 13px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center;
+}
+.vtheater-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px; height: 64px;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+}
+.vtheater-nav.prev { left: 4px; border-radius: 0 12px 12px 0; }
+.vtheater-nav.next { right: 4px; border-radius: 12px 0 0 12px; }
+.vtheater-nav:active { background: rgba(255, 255, 255, 0.22); }
+.vtheater-loading {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  color: rgba(255, 255, 255, 0.7);
+}
 .video-stage-player {
   position: relative;
   width: min(80vw, 44vh);
@@ -1200,6 +1257,32 @@ input[type='color'].colorwell {
   width: 100%; height: 100%;
   object-fit: cover;
   display: block;
+}
+/* Листалка: вьюпорт + трек из слайдов во всю ширину. */
+.vtheater-viewport {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+.vtheater-track {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  will-change: transform;
+}
+.vtheater-track.snap { transition: transform 0.24s ease-out; }
+.vtheater-slide {
+  flex: 0 0 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
 }
 .vtheater-bigplay {
   position: absolute;

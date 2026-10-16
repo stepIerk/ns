@@ -11,7 +11,7 @@ export const MAX_VOICE_MS = 10 * 60 * 1000; // автостоп записи
 export const MIN_VOICE_MS = 500; // короче — «слишком короткое», не шлём
 export const HOLD_TO_RECORD_MS = 200; // холд дольше — запись; короче — тап (смена mic/cam)
 export const LOCK_DY = -70; // слайд вверх — зафиксировать запись
-export const CANCEL_DX = -60; // слайд влево — отмена (корзина подсвечивается)
+export const LOCK_DX = -60; // слайд влево — зафиксировать запись (lock)
 
 /**
  * Первый поддерживаемый mime. mp4 первым осознанно: его играют и iOS Safari,
