@@ -3,7 +3,7 @@ import { addDoc, collection, doc, serverTimestamp, setDoc } from 'firebase/fires
 import { getFirebase } from '../lib/firebase';
 import { b64ToBytes, bufToB64, decryptBytes, encryptBytes } from '../lib/crypto';
 import { prepareImage } from '../lib/image';
-import { authedPost } from '../lib/api';
+import { authedPost, getMaxChunk } from '../lib/api';
 import { blobGet, blobPut } from '../lib/db';
 import type { ChatMessage, MessageDoc, ReplyTarget } from '../types';
 import { computeVoiceWave } from '../lib/voice';
@@ -17,16 +17,19 @@ import { computeVoiceWave } from '../lib/voice';
 // Фото подгружаются САМИ (ensurePhotos): очередь с пулом, расшифровка,
 // objectURL кэшируется — в ленте картинки видны сразу, тапать не надо.
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
-const DOWNLOAD_CHUNK = 1024 * 1024;
-const UPLOAD_CHUNK = 1024 * 1024;
 const WRITE_TIMEOUT_MS = 30000;
-// Параллельных скачиваний: бережём лимит конкурентных вызовов функции.
-const MAX_PARALLEL_DOWNLOADS = 4;
+// Параллельных скачиваний файлов: бережём лимит конкурентных вызовов функции.
+const MAX_PARALLEL_DOWNLOADS = 3;
+// Параллельных чанков внутри одного файла (скачивание).
+const DOWNLOAD_WORKERS = 3;
 // Чуть ниже execution-timeout функции (30с): живая, но медленная функция
 // успеет ответить 504 с диагнозом; срабатывает только на true-зависаниях.
 const MEDIA_TIMEOUT_MS = 25000;
 
-export type PhotoState = { status: 'loading' } | { status: 'ready'; url: string } | { status: 'error' };
+export type PhotoState =
+  | { status: 'loading' }
+  | { status: 'ready'; url: string; uploading?: boolean; progress?: number }
+  | { status: 'error' };
 
 function withTimeout<T>(p: Promise<T>, ms = WRITE_TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -46,15 +49,13 @@ async function downloadCipher(m: ChatMessage): Promise<ArrayBuffer> {
   if (!m.driveFileId || !m.iv || total <= 0 || total > MAX_PHOTO_BYTES) {
     throw new Error('bad photo metadata');
   }
+  const chunkSize = await getMaxChunk();
   const ranges: { start: number; end: number }[] = [];
-  for (let start = 0; start < total; start += DOWNLOAD_CHUNK) {
-    ranges.push({ start, end: Math.min(start + DOWNLOAD_CHUNK - 1, total - 1) });
+  for (let start = 0; start < total; start += chunkSize) {
+    ranges.push({ start, end: Math.min(start + chunkSize - 1, total - 1) });
   }
-  // Чанки качаем параллельно (пул 3): было строго последовательно —
-  // каждый мегабайт ждал полного round-trip через функцию.
-  // Закачка resumable-загрузке это не грозит (она только на upload,
-  // там порядок важен — его не трогаем).
-  const CONCURRENCY = 3;
+  // Чанки качаем параллельно: раньше каждый мегабайт ждал полного
+  // round-trip через функцию, теперь файл едет пулом в 3 потока.
   const parts: Uint8Array[] = new Array(ranges.length);
   let next = 0;
   async function worker(): Promise<void> {
@@ -77,7 +78,7 @@ async function downloadCipher(m: ChatMessage): Promise<ArrayBuffer> {
     }
   }
   await Promise.all(
-    Array.from({ length: Math.min(CONCURRENCY, ranges.length) }, () => worker()),
+    Array.from({ length: Math.min(DOWNLOAD_WORKERS, ranges.length) }, () => worker()),
   );
   let received = 0;
   for (const p of parts) received += p.length;
@@ -88,6 +89,31 @@ async function downloadCipher(m: ChatMessage): Promise<ArrayBuffer> {
     off += p.length;
   }
   return cipher.buffer as ArrayBuffer;
+}
+
+// Заливка шифротекста в Drive через сервер (resumable, строго по порядку).
+// Чанк берём максимально допустимый сервером: меньше round-trip'ов —
+// короткие кружки уезжают ОДНИМ запросом. onProgress — доля 0..1.
+async function uploadCipherBytes(
+  sessionUrl: string,
+  bytes: Uint8Array,
+  onProgress?: (fraction: number) => void,
+): Promise<string> {
+  const chunkSize = await getMaxChunk();
+  const total = bytes.byteLength;
+  let driveFileId = '';
+  for (let start = 0; start < total; start += chunkSize) {
+    const end = Math.min(start + chunkSize - 1, total - 1);
+    const r = await authedPost<{ done: boolean; fileId?: string }>(
+      '/api/media/upload-chunk',
+      { sessionUrl, start, end, total, data: bufToB64(bytes.slice(start, end + 1)) },
+      { timeoutMs: MEDIA_TIMEOUT_MS },
+    );
+    onProgress?.(Math.min(1, (end + 1) / total));
+    if (r.done) driveFileId = r.fileId ?? '';
+  }
+  if (!driveFileId) throw new Error('Drive не вернул id файла');
+  return driveFileId;
 }
 
 export function useMedia(
@@ -110,6 +136,10 @@ export function useMedia(
   const queueRef = useRef<ChatMessage[]>([]);
   const activeRef = useRef(0);
   const urlsRef = useRef<Map<string, string>>(new Map());
+  // Отправляемые кружки (pending): blobURL в ленте до эха из Firestore.
+  const pendingUploadsRef = useRef<Map<string, { pendingId: string; url: string; createdAt: number }>>(
+    new Map(),
+  );
 
   // Чистим objectURL при размонтировании.
   useEffect(() => {
@@ -227,21 +257,9 @@ export function useMedia(
           { timeoutMs: MEDIA_TIMEOUT_MS },
         );
         // Заливка шифротекста чанками через сервер (лимит запроса к функции 3.5МБ,
-        // чанк 1МБ → ~1.37МБ base64 + JSON — с запасом). Сервер доливает чанки
-        // в resumable-сессию Drive своим PUT с Content-Range.
-        const bytes = new Uint8Array(cipher);
-        const total = bytes.byteLength;
-        let driveFileId = '';
-        for (let start = 0; start < total; start += UPLOAD_CHUNK) {
-          const end = Math.min(start + UPLOAD_CHUNK - 1, total - 1);
-          const r = await authedPost<{ done: boolean; fileId?: string }>(
-            '/api/media/upload-chunk',
-            { sessionUrl, start, end, total, data: bufToB64(bytes.slice(start, end + 1)) },
-            { timeoutMs: MEDIA_TIMEOUT_MS },
-          );
-          if (r.done) driveFileId = r.fileId ?? '';
-        }
-        if (!driveFileId) throw new Error('Drive не вернул id файла');
+        // размер чанка — из health сервера, base64 укладывается с запасом).
+        // Сервер доливает чанки в resumable-сессию Drive своим PUT с Content-Range.
+        const driveFileId = await uploadCipherBytes(sessionUrl, new Uint8Array(cipher));
         const fb = getFirebase();
         if (!fb) throw new Error('Firebase не настроен');
         await withTimeout(
@@ -314,19 +332,7 @@ export function useMedia(
           { mediaId, mimeType: mime, size: cipher.byteLength },
           { timeoutMs: MEDIA_TIMEOUT_MS },
         );
-        const bytes = new Uint8Array(cipher);
-        const total = bytes.byteLength;
-        let driveFileId = '';
-        for (let start = 0; start < total; start += UPLOAD_CHUNK) {
-          const end = Math.min(start + UPLOAD_CHUNK - 1, total - 1);
-          const r = await authedPost<{ done: boolean; fileId?: string }>(
-            '/api/media/upload-chunk',
-            { sessionUrl, start, end, total, data: bufToB64(bytes.slice(start, end + 1)) },
-            { timeoutMs: MEDIA_TIMEOUT_MS },
-          );
-          if (r.done) driveFileId = r.fileId ?? '';
-        }
-        if (!driveFileId) throw new Error('Drive не вернул id файла');
+        const driveFileId = await uploadCipherBytes(sessionUrl, new Uint8Array(cipher));
         const fb = getFirebase();
         if (!fb) throw new Error('Firebase не настроен');
         await withTimeout(
@@ -378,37 +384,66 @@ export function useMedia(
     [userUid, notifyMessage],
   );
 
-  // Кружок: та же цепочка, что у голосового (шифр → Drive чанками → media → message).
-  // Кроп в круг — только CSS-ом при показе, в Drive лежит прямоугольник как есть.
+  // Кружок с оптимистичным пузырём: запись заканчивается — кружок СРАЗУ
+  // играет в ленте (локальный blobURL), на кольце — прогресс заливки.
+  // Эхо из Firestore подменяет pending на настоящее сообщение (clientMessageId
+  // тот же), а картинка при этом берётся мгновенно из IDB-кэша (blobPut ещё
+  // до сети) — без мигания и без перекачки с сервера.
   const sendVideo = useCallback(
-    async (blob: Blob, mime: string, recordedMs: number, opts?: { replyTo?: ReplyTarget }) => {
+    async (
+      blob: Blob,
+      mime: string,
+      recordedMs: number,
+      opts?: {
+        replyTo?: ReplyTarget;
+        addPending?: (m: ChatMessage) => void;
+        dropPending?: (clientMessageId: string) => void;
+      },
+    ) => {
       setError(null);
-      setPhotoBusy(true);
       const clientMessageId = crypto.randomUUID();
       const mediaId = crypto.randomUUID();
+      const pendingId = `local-${clientMessageId}`;
+      const url = URL.createObjectURL(blob);
+      pendingUploadsRef.current.set(clientMessageId, {
+        pendingId,
+        url,
+        createdAt: Date.now(),
+      });
+      urlsRef.current.set(pendingId, url);
+      photosRef.current[pendingId] = { status: 'ready', url, uploading: true, progress: 0 };
+      publish();
+      const replyTo = opts?.replyTo;
+      opts?.addPending?.({
+        id: pendingId,
+        clientMessageId,
+        senderId: userUid,
+        createdAtMs: Date.now(),
+        kind: 'video',
+        durationMs: recordedMs,
+        status: 'sending',
+        pending: true,
+        replyTo,
+      });
       try {
         if (blob.size > MAX_PHOTO_BYTES) throw new Error('Видео больше 10 МБ');
         const plainBuf = await blob.arrayBuffer();
         if (plainBuf.byteLength === 0) throw new Error('Пустая запись');
+        // В кэш сразу (до сети): эхо после addDoc должно собраться локально.
+        blobPut(mediaId, new Blob([plainBuf], { type: mime }), mime).catch(() => {});
         const { ivB64, cipher } = await encryptBytes(keyRef.current, plainBuf);
         const { sessionUrl } = await authedPost<{ sessionUrl: string }>(
           '/api/media/upload-init',
           { mediaId, mimeType: mime, size: cipher.byteLength },
           { timeoutMs: MEDIA_TIMEOUT_MS },
         );
-        const bytes = new Uint8Array(cipher);
-        const total = bytes.byteLength;
-        let driveFileId = '';
-        for (let start = 0; start < total; start += UPLOAD_CHUNK) {
-          const end = Math.min(start + UPLOAD_CHUNK - 1, total - 1);
-          const r = await authedPost<{ done: boolean; fileId?: string }>(
-            '/api/media/upload-chunk',
-            { sessionUrl, start, end, total, data: bufToB64(bytes.slice(start, end + 1)) },
-            { timeoutMs: MEDIA_TIMEOUT_MS },
-          );
-          if (r.done) driveFileId = r.fileId ?? '';
-        }
-        if (!driveFileId) throw new Error('Drive не вернул id файла');
+        const driveFileId = await uploadCipherBytes(sessionUrl, new Uint8Array(cipher), (f) => {
+          const st = photosRef.current[pendingId];
+          if (st?.status === 'ready' && st.uploading) {
+            photosRef.current[pendingId] = { ...st, progress: f };
+            publish();
+          }
+        });
         const fb = getFirebase();
         if (!fb) throw new Error('Firebase не настроен');
         await withTimeout(
@@ -422,7 +457,6 @@ export function useMedia(
             createdAt: serverTimestamp(),
           }),
         );
-        const replyTo = opts?.replyTo;
         const ref = await withTimeout(
           addDoc(collection(fb.db, 'rooms', 'main', 'messages'), {
             clientMessageId,
@@ -448,15 +482,18 @@ export function useMedia(
           } satisfies MessageDoc),
         );
         notifyMessage(ref.id);
-        // Своё — сразу в локальный кэш (перекачивать не надо).
-        blobPut(mediaId, new Blob([plainBuf], { type: mime }), mime).catch(() => {});
+        // Заливка закончилась — кольцо прогресса снимаем, кружок дожидается эха.
+        const st = photosRef.current[pendingId];
+        if (st?.status === 'ready') {
+          photosRef.current[pendingId] = { status: 'ready', url: st.url };
+          publish();
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Не удалось отправить видео');
-      } finally {
-        setPhotoBusy(false);
+        opts?.dropPending?.(clientMessageId);
       }
     },
-    [userUid, notifyMessage],
+    [userUid, notifyMessage, publish],
   );
 
   const openViewer = useCallback(
@@ -468,6 +505,31 @@ export function useMedia(
   );
 
   const closeViewer = useCallback(() => setViewerId(null), []);
+
+  // Чистка оптимистичных кружков: как только pending исчез из ленты
+  // (эхо пришло или отправка упала) — снимаем локальный blobURL и запись
+  // прогресса. Двухсекундный грейс защищает от гонки «publish до addPending».
+  const syncPendingUploads = useCallback(
+    (aliveClientMessageIds: Set<string>) => {
+      let changed = false;
+      for (const [cmId, up] of pendingUploadsRef.current) {
+        if (aliveClientMessageIds.has(cmId) || Date.now() - up.createdAt < 2000) continue;
+        pendingUploadsRef.current.delete(cmId);
+        delete photosRef.current[up.pendingId];
+        if (urlsRef.current.get(up.pendingId) === up.url) {
+          urlsRef.current.delete(up.pendingId);
+          try {
+            URL.revokeObjectURL(up.url);
+          } catch {
+            // ignore
+          }
+        }
+        changed = true;
+      }
+      if (changed) publish();
+    },
+    [publish],
+  );
 
   // viewer считаем из state (не из ref — ref нельзя читать в рендере).
   const viewerEntry = viewerId ? photos[viewerId] : undefined;
@@ -486,5 +548,6 @@ export function useMedia(
     retryPhoto,
     openViewer,
     closeViewer,
+    syncPendingUploads,
   };
 }

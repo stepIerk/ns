@@ -1361,6 +1361,27 @@ input[type='color'].colorwell {
   display: block;
 }
 .video-loading { width: 210px; max-width: 60vw; border-radius: 0; }
+/* Кружок отправляется: лёгкое приглушение + кольцо прогресса заливки. */
+.video-upload-ovl {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+.video-upload-ovl .ring {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: conic-gradient(
+    rgba(255, 255, 255, 0.95) calc(var(--p, 0) * 360deg),
+    rgba(255, 255, 255, 0.22) 0
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent 63%, #000 64%);
+  mask: radial-gradient(farthest-side, transparent 63%, #000 64%);
+}
 .video-dur {
   position: absolute;
   left: 8px; bottom: 8px;

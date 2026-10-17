@@ -383,9 +383,19 @@ interface VideoBubbleProps {
   radius: number;
   onRetry: () => void;
   onExpand: () => void;
+  uploadProgress?: number;
 }
 
-function VideoBubble({ m, url, loadError, shape, radius, onRetry, onExpand }: VideoBubbleProps) {
+function VideoBubble({
+  m,
+  url,
+  loadError,
+  shape,
+  radius,
+  onRetry,
+  onExpand,
+  uploadProgress,
+}: VideoBubbleProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const totalMs = m.durationMs && m.durationMs > 0 ? m.durationMs : 0;
 
@@ -426,9 +436,10 @@ function VideoBubble({ m, url, loadError, shape, radius, onRetry, onExpand }: Vi
   }, [url]);
 
   // Тап — открыть театр (там звук, пауза и перемотка).
+  // Пока кружок грузится (pending) — театр недоступен.
   const openTheater = (e: React.SyntheticEvent) => {
     e.stopPropagation();
-    if (url) onExpand();
+    if (url && !m.pending) onExpand();
   };
 
   if (loadError) {
@@ -467,6 +478,14 @@ function VideoBubble({ m, url, loadError, shape, radius, onRetry, onExpand }: Vi
         />
       ) : (
         <div className="photo-loading video-loading" aria-hidden />
+      )}
+      {typeof uploadProgress === 'number' && (
+        <div className="video-upload-ovl" aria-hidden>
+          <span
+            className="ring"
+            style={{ '--p': String(Math.max(0.03, Math.min(1, uploadProgress))) } as React.CSSProperties}
+          />
+        </div>
       )}
       <span className="video-dur">{formatVoiceTime(totalMs)}</span>
     </div>
@@ -1237,6 +1256,7 @@ export default function MessageBubble(props: MessageBubbleProps) {
               radius={videoRadius}
               onRetry={() => {}}
               onExpand={() => onExpandVideo(m)}
+              uploadProgress={st.uploading ? (st.progress ?? 0) : undefined}
             />
           );
         })()}

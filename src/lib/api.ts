@@ -22,6 +22,54 @@ function apiUrl(path: string): string {
   return path;
 }
 
+// Максимальный размер чанка, который готов принять сервер (ограничен
+// лимитом запроса функции 3.5МБ: base64 раздувает на треть). Новый сервер
+// отдаёт maxChunk в health; старый — молчит, тогда работаем легаси-чанками
+// 1МБ (ровно то, что понимает текущая версия функции).
+const LEGACY_MAX_CHUNK = 1024 * 1024;
+let maxChunk: number | null = null;
+let maxChunkProbe: Promise<number> | null = null;
+
+export function getMaxChunk(): Promise<number> {
+  if (maxChunk != null) return Promise.resolve(maxChunk);
+  if (!maxChunkProbe) {
+    maxChunkProbe = (async () => {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 5000);
+        const res = await fetch(apiUrl('/api/health'), { signal: ctrl.signal }).finally(() =>
+          clearTimeout(timer),
+        );
+        if (res.ok) {
+          // Сервер ответил: кэшируем и успех, и «старый сервер без maxChunk»
+          // (переспрашивать его каждый раз незачем). Сетевой сбой — не кэшируем.
+          let n = LEGACY_MAX_CHUNK;
+          try {
+            const data = (await res.json()) as { maxChunk?: unknown };
+            if (
+              typeof data.maxChunk === 'number' &&
+              data.maxChunk >= 256 * 1024 &&
+              data.maxChunk <= 3 * 1024 * 1024
+            ) {
+              n = Math.floor(data.maxChunk);
+            }
+          } catch {
+            // не JSON — считаем старым сервером
+          }
+          maxChunk = n;
+          return n;
+        }
+      } catch {
+        // Офлайн — попробуем в следующий раз.
+      } finally {
+        maxChunkProbe = null;
+      }
+      return LEGACY_MAX_CHUNK;
+    })();
+  }
+  return maxChunkProbe;
+}
+
 export async function authedPost<T>(
   path: string,
   body: Record<string, unknown>,

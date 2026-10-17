@@ -403,6 +403,16 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
     [userUid, firePush],
   );
 
+  // Оптимистичные медиа (кружки): useMedia кладёт pending-сообщение сюда,
+  // эхо из Firestore убирает его само (эффект выше — матч по clientMessageId).
+  const addPending = useCallback((m: ChatMessage) => {
+    setPending((p) => (p.some((x) => x.clientMessageId === m.clientMessageId) ? p : [...p, m]));
+  }, []);
+
+  const dropPending = useCallback((clientMessageId: string) => {
+    setPending((p) => p.filter((m) => m.clientMessageId !== clientMessageId));
+  }, []);
+
   const retryToDraft = useCallback(
     (clientMessageId: string): string | null => {
       const item = pending.find((m) => m.clientMessageId === clientMessageId);
@@ -431,6 +441,8 @@ export function useChat(userUid: string, roomKey: CryptoKey, peerSeenTs?: number
       '(same-origin /api)',
     sendText,
     retryToDraft,
+    addPending,
+    dropPending,
     notifyMessage: firePush,
     loadOlder,
   };

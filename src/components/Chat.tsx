@@ -47,9 +47,17 @@ export default function Chat({
     retryToDraft,
     notifyMessage,
     loadOlder,
+    addPending,
+    dropPending,
   } = useChat(user.uid, roomKey, presence.seenTs ?? undefined);
 
   const media = useMedia(user.uid, roomKey, notifyMessage);
+  const syncPendingUploads = media.syncPendingUploads;
+
+  // Эхо/ошибка убрали pending-кружок — прибираем его локальный blobURL.
+  useEffect(() => {
+    syncPendingUploads(new Set(visible.map((m) => m.clientMessageId)));
+  }, [visible, syncPendingUploads]);
 
   const [pushOn, setPushOn] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
@@ -247,7 +255,7 @@ export default function Chat({
         void media.sendVoice(blob, mime, recordedMs, opts);
       }}
       onSendVideo={(blob, mime, recordedMs, opts) => {
-        void media.sendVideo(blob, mime, recordedMs, opts);
+        void media.sendVideo(blob, mime, recordedMs, { ...opts, addPending, dropPending });
       }}
       onRetryPhoto={(m) => media.retryPhoto(m)}
       onOpenViewer={(id) => media.openViewer(id)}

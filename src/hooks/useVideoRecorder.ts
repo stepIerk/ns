@@ -43,6 +43,11 @@ export function useVideoRecorder() {
   const finishRef = useRef<(send: boolean) => void>(() => {});
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const facingRef = useRef<VideoFacing>('user');
+  // Старт в процессе (getUserMedia на iOS включается 1–3с) и намерение
+  // отпущенного пальца: если finish пришёл раньше готовности камеры —
+  // запоминаем его и применяем сразу после старта (иначе запись «зависает»).
+  const startingRef = useRef(false);
+  const pendingFinishRef = useRef<boolean | null>(null);
 
   const teardown = useCallback(() => {
     if (timerRef.current) {
@@ -66,57 +71,73 @@ export function useVideoRecorder() {
 
   const start = useCallback(
     async (onDone: (take: VideoTake | null) => void): Promise<{ ok: boolean; message?: string }> => {
-      if (recRef.current) return { ok: false };
+      if (recRef.current || startingRef.current) {
+        return { ok: false, message: 'Камера ещё включается — попробуй ещё раз' };
+      }
       if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
         return { ok: false, message: 'Браузер не умеет записывать видео' };
       }
       const mime = pickVideoMime();
       if (!mime) return { ok: false, message: 'Браузер не умеет записывать видео' };
-      facingRef.current = 'user';
-      setFacing('user');
-      let st: MediaStream;
+      startingRef.current = true;
+      pendingFinishRef.current = null;
+      finishedRef.current = false; // до ответа камеры — «идёт старт», не «финиш прошлой записи»
       try {
-        st = await navigator.mediaDevices.getUserMedia(videoConstraints('user'));
-      } catch {
-        return { ok: false, message: 'Нет доступа к камере — разреши в настройках' };
-      }
-      let rec: MediaRecorder;
-      try {
-        // Битрейт капаем (см. lib/video): у кого не поддерживается — упадёт
-        // в catch и запишем без капа (файл больше, но работает везде).
-        rec = new MediaRecorder(st, {
-          mimeType: mime,
-          videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
-          audioBitsPerSecond: AUDIO_BITS_PER_SECOND,
-        });
-      } catch {
+        facingRef.current = 'user';
+        setFacing('user');
+        let st: MediaStream;
         try {
-          rec = new MediaRecorder(st, { mimeType: mime });
+          st = await navigator.mediaDevices.getUserMedia(videoConstraints('user'));
         } catch {
-          st.getTracks().forEach((t) => t.stop());
-          return { ok: false, message: 'Не удалось начать запись' };
+          return { ok: false, message: 'Нет доступа к камере — разреши в настройках' };
         }
+        let rec: MediaRecorder;
+        try {
+          // Битрейт капаем (см. lib/video): у кого не поддерживается — упадёт
+          // в catch и запишем без капа (файл больше, но работает везде).
+          rec = new MediaRecorder(st, {
+            mimeType: mime,
+            videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
+            audioBitsPerSecond: AUDIO_BITS_PER_SECOND,
+          });
+        } catch {
+          try {
+            rec = new MediaRecorder(st, { mimeType: mime });
+          } catch {
+            st.getTracks().forEach((t) => t.stop());
+            return { ok: false, message: 'Не удалось начать запись' };
+          }
+        }
+        chunksRef.current = [];
+        finishedRef.current = false;
+        doneRef.current = onDone;
+        mimeRef.current = rec.mimeType || mime;
+        streamRef.current = st;
+        recRef.current = rec;
+        startedAtRef.current = Date.now();
+        rec.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+        };
+        rec.start(1000);
+        setStream(st);
+        setElapsedMs(0);
+        setPhase('holding');
+        timerRef.current = setInterval(() => {
+          const el = Date.now() - startedAtRef.current;
+          setElapsedMs(el);
+          if (el >= MAX_VIDEO_MS) finishRef.current(true);
+        }, 200);
+        // Палец отпущен (или жест отменён), пока камера ещё включалась:
+        // применяем отложенный finish — вместо «самоиграющейся» записи.
+        const pending = pendingFinishRef.current;
+        if (pending != null) {
+          pendingFinishRef.current = null;
+          finishRef.current(pending);
+        }
+        return { ok: true };
+      } finally {
+        startingRef.current = false;
       }
-      chunksRef.current = [];
-      finishedRef.current = false;
-      doneRef.current = onDone;
-      mimeRef.current = rec.mimeType || mime;
-      streamRef.current = st;
-      recRef.current = rec;
-      startedAtRef.current = Date.now();
-      rec.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-      };
-      rec.start(1000);
-      setStream(st);
-      setElapsedMs(0);
-      setPhase('holding');
-      timerRef.current = setInterval(() => {
-        const el = Date.now() - startedAtRef.current;
-        setElapsedMs(el);
-        if (el >= MAX_VIDEO_MS) finishRef.current(true);
-      }, 200);
-      return { ok: true };
     },
     [],
   );
@@ -125,7 +146,12 @@ export function useVideoRecorder() {
     (send: boolean) => {
       const rec = recRef.current;
       const done = doneRef.current;
-      if (!rec || !done || finishedRef.current) return;
+      if (finishedRef.current) return;
+      if (!rec || !done) {
+        // Старт ещё не завершился — запомним намерение (см. start()).
+        if (startingRef.current) pendingFinishRef.current = send;
+        return;
+      }
       finishedRef.current = true;
       const recordedMs = Date.now() - startedAtRef.current;
       const mime = mimeRef.current;

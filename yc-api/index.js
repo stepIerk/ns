@@ -13,7 +13,10 @@ const { initResumableUpload, uploadChunk, downloadBytes } = require('./lib/drive
 const webpush = require('web-push');
 
 const MAX_CIPHER_BYTES = 12 * 1024 * 1024; // 10МБ + overhead AES-GCM
-const CHUNK_BYTES = 1024 * 1024; // чанки скачивания/загрузки 1МБ (запрос к функции < 3.5МБ)
+// Чанки загрузки/скачивания 1.5МБ: лимит запроса/ответа функции — 3.5МБ,
+// base64 раздувает на треть (1.5МБ → 2МБ base64) — с запасом. Клиент берёт
+// размер из health (maxChunk), старые клиенты шлют 1МБ — тоже валидно.
+const CHUNK_BYTES = 1500 * 1000;
 
 let vapidSet = false;
 
@@ -43,6 +46,7 @@ async function health(corsHeaders) {
   const has = (n) => !!process.env[n];
   return json(200, {
     ok: true,
+    maxChunk: CHUNK_BYTES, // клиент подстраивает размер чанка (см. src/lib/api.ts)
     env: {
       FIREBASE_SERVICE_ACCOUNT_JSON: has('FIREBASE_SERVICE_ACCOUNT_JSON'),
       ALLOWED_UIDS: has('ALLOWED_UIDS'),

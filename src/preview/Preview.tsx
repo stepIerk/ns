@@ -18,6 +18,8 @@ const PEER = 'peer-uid';
 
 // URL выбранных в превью фото (вне React — переживает ререндеры).
 const previewPhotoUrls = new Map<string, string>();
+// Прогресс «заливки» кружка в превью: 0..1, пока <1 — пузырь pending с кольцом.
+const previewUploads = new Map<string, number>();
 
 const TEXTS = [
   'Привет! Как дела?',
@@ -281,10 +283,12 @@ export default function Preview() {
   };
 
   // Кружок в превью: настоящий записанный blob → сразу url + сообщение.
+  // Как в бою: pending-пузырь с кольцом прогресса, затем «эхо» — снятие pending.
   const sendVideoPreview = (blob: Blob, mime: string, recordedMs: number) => {
     const url = URL.createObjectURL(blob);
     const id = `pv-local-${Date.now()}`;
     previewPhotoUrls.set(id, url);
+    previewUploads.set(id, 0);
     setPhotoTick((x) => x + 1);
     setExtra((prev) => [
       ...prev,
@@ -300,14 +304,33 @@ export default function Preview() {
         size: blob.size,
         iv: 'iv',
         durationMs: recordedMs,
-        status: 'sent',
+        status: 'sending',
+        pending: true,
       },
     ]);
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      const p = Math.min(1, (Date.now() - t0) / 1600);
+      previewUploads.set(id, p);
+      setPhotoTick((x) => x + 1);
+      if (p >= 1) {
+        clearInterval(timer);
+        setExtra((prev) =>
+          prev.map((m) => (m.id === id ? { ...m, pending: false, status: 'sent' as const } : m)),
+        );
+      }
+    }, 120);
   };
   const photosWithLocal = useMemo(() => {
     const out = { ...photos };
     for (const [id, url] of previewPhotoUrls) {
-      if (!out[id]) out[id] = { status: 'ready', url };
+      if (!out[id]) {
+        const p = previewUploads.get(id);
+        out[id] =
+          p != null && p < 1
+            ? { status: 'ready', url, uploading: true, progress: p }
+            : { status: 'ready', url };
+      }
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
