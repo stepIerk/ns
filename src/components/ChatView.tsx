@@ -323,6 +323,7 @@ export default function ChatView(p: ChatViewProps) {
         notify('Слишком короткий кружок — удерживай кнопку дольше');
         return;
       }
+      if (take.truncated) notify('Кружок упёрся в лимит размера — отправился как есть');
       const draft = replyDraftRef.current;
       setReplyDraft(null);
       onSendVideo(take.blob, take.mime, take.recordedMs, draft ? { replyTo: draft } : undefined);

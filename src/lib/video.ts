@@ -11,6 +11,13 @@ export const MIN_VIDEO_MS = 1000; // короче — «слишком коро�
 // вместо 5–15МБ сырого 1080p). Меньше файл — меньше чанков гнать/качать.
 export const VIDEO_BITS_PER_SECOND = 900_000;
 export const AUDIO_BITS_PER_SECOND = 48_000;
+// Размер решает судьбу кружка: и отправка, и приём режут на 10 МБ
+// (MAX_PHOTO_BYTES), а битрейт-кап поддерживают не все (WebKit пишет на
+// своих ~10 Мбит/с — константа LargeVideoBitRate в его исходниках).
+// Поэтому стопим запись по фактическим чанкам: софт-бюджет оставляет
+// место финальному куску, жёсткий — потолок для хвоста на всякий случай.
+export const MAX_VIDEO_BYTES = 8.5 * 1024 * 1024;
+export const MAX_VIDEO_FILE_BYTES = 9.9 * 1024 * 1024;
 
 export type VideoFacing = 'user' | 'environment'; // фронталка / основная
 
