@@ -46,7 +46,8 @@ function withTimeout<T>(p: Promise<T>, ms = WRITE_TIMEOUT_MS): Promise<T> {
 
 async function downloadCipher(m: ChatMessage): Promise<ArrayBuffer> {
   const total = m.size ?? 0;
-  if (!m.driveFileId || !m.iv || total <= 0 || total > MAX_PHOTO_BYTES) {
+  // size — размер ШИФРОтекста (plaintext + 16Б тег AES-GCM), поэтому +запас.
+  if (!m.driveFileId || !m.iv || total <= 0 || total > MAX_PHOTO_BYTES + 1024) {
     throw new Error('bad photo metadata');
   }
   const chunkSize = await getMaxChunk();
@@ -94,6 +95,8 @@ async function downloadCipher(m: ChatMessage): Promise<ArrayBuffer> {
 // Заливка шифротекста в Drive через сервер (resumable, строго по порядку).
 // Чанк берём максимально допустимый сервером: меньше round-trip'ов —
 // короткие кружки уезжают ОДНИМ запросом. onProgress — доля 0..1.
+// Позицию каждого следующего чанка берём у сервера: Google может подтвердить
+// чанк лишь частично и сервер вернёт фактическую точку продолжения (next).
 async function uploadCipherBytes(
   sessionUrl: string,
   bytes: Uint8Array,
@@ -101,16 +104,23 @@ async function uploadCipherBytes(
 ): Promise<string> {
   const chunkSize = await getMaxChunk();
   const total = bytes.byteLength;
+  let pos = 0;
   let driveFileId = '';
-  for (let start = 0; start < total; start += chunkSize) {
-    const end = Math.min(start + chunkSize - 1, total - 1);
-    const r = await authedPost<{ done: boolean; fileId?: string }>(
+  while (pos < total) {
+    const end = Math.min(pos + chunkSize - 1, total - 1);
+    const r = await authedPost<{ done: boolean; fileId?: string; next?: number }>(
       '/api/media/upload-chunk',
-      { sessionUrl, start, end, total, data: bufToB64(bytes.slice(start, end + 1)) },
+      { sessionUrl, start: pos, end, total, data: bufToB64(bytes.subarray(pos, end + 1)) },
       { timeoutMs: MEDIA_TIMEOUT_MS },
     );
     onProgress?.(Math.min(1, (end + 1) / total));
-    if (r.done) driveFileId = r.fileId ?? '';
+    if (r.done) {
+      driveFileId = r.fileId ?? '';
+      break;
+    }
+    const nextPos = typeof r.next === 'number' ? r.next : end + 1;
+    if (nextPos <= pos) throw new Error('Загрузка не продвинулась — попробуй ещё раз');
+    pos = nextPos;
   }
   if (!driveFileId) throw new Error('Drive не вернул id файла');
   return driveFileId;

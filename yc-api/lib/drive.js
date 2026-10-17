@@ -136,6 +136,16 @@ async function initResumableUpload({ name, mimeType }) {
  * Возвращает { done: false } для промежуточных чанков (Google отвечает 308)
  * или { done: true, fileId } для последнего.
  */
+/**
+ * Реально принятый префикс чанка по заголовку Range ответа 308:
+ * «bytes=0-N» → N+1. Без заголовка Google ничего не зафиксировал → start.
+ */
+function ackedOffset(rangeHeader, start, end) {
+  const m = rangeHeader ? rangeHeader.match(/bytes=0-(\d+)/) : null;
+  if (!m) return start;
+  return Math.min(parseInt(m[1], 10) + 1, end + 1);
+}
+
 async function uploadChunk({ sessionUrl, start, end, total, chunk }) {
   if (typeof sessionUrl !== 'string') {
     throw Object.assign(new Error('bad sessionUrl'), { status: 400 });
@@ -168,7 +178,13 @@ async function uploadChunk({ sessionUrl, start, end, total, chunk }) {
     },
     body: chunk,
   });
-  if (res.status === 308) return { done: false }; // Resume Incomplete
+  if (res.status === 308) {
+    // Resume Incomplete. Google мог зафиксировать лишь часть чанка (напр. если
+    // его размер не кратен 256КБ — фиксирует до границы). Возвращаем клиенту
+    // фактическую точку продолжения, чтобы он слал следующий чанк ровно с неё,
+    // а не с расчётной позиции (иначе 503 «offset exceeds already uploaded size»).
+    return { done: false, next: ackedOffset(res.headers.get('range'), start, end) };
+  }
   if (!res.ok) throw Object.assign(new Error(`Drive upload chunk failed: ${res.status}${await googleError(res)}`), { status: 502 });
   const meta = await res.json();
   if (!meta || !meta.id) throw Object.assign(new Error('Drive upload: no file id'), { status: 502 });
@@ -206,4 +222,4 @@ async function downloadBytes({ fileId, start, end }) {
   return { bytes: buf, total };
 }
 
-module.exports = { initResumableUpload, uploadChunk, downloadBytes };
+module.exports = { initResumableUpload, uploadChunk, downloadBytes, ackedOffset };

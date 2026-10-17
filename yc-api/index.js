@@ -13,10 +13,14 @@ const { initResumableUpload, uploadChunk, downloadBytes } = require('./lib/drive
 const webpush = require('web-push');
 
 const MAX_CIPHER_BYTES = 12 * 1024 * 1024; // 10МБ + overhead AES-GCM
-// Чанки загрузки/скачивания 1.5МБ: лимит запроса/ответа функции — 3.5МБ,
-// base64 раздувает на треть (1.5МБ → 2МБ base64) — с запасом. Клиент берёт
-// размер из health (maxChunk), старые клиенты шлют 1МБ — тоже валидно.
-const CHUNK_BYTES = 1500 * 1000;
+// Чанк загрузки обязан быть кратен 256КБ (требование resumable-протокола Drive
+// для НЕпоследних чанков): некратный Google фиксирует только до границы 256КБ —
+// позиция уезжает, следующая догрузка падает 503 «upload offset exceeds already
+// uploaded size» (реальный баг с 1500*1000). 2МиБ: base64 ≈ 2.8МБ — влезает
+// в лимит запроса/ответа функции 3.5МБ. Клиент берёт размер из health
+// (maxChunk), старые клиенты шлют 1МБ — тоже кратно 256КБ и валидно.
+const DRIVE_CHUNK_ALIGN = 256 * 1024;
+const CHUNK_BYTES = 8 * DRIVE_CHUNK_ALIGN;
 
 let vapidSet = false;
 

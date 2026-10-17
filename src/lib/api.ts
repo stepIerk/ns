@@ -27,6 +27,10 @@ function apiUrl(path: string): string {
 // отдаёт maxChunk в health; старый — молчит, тогда работаем легаси-чанками
 // 1МБ (ровно то, что понимает текущая версия функции).
 const LEGACY_MAX_CHUNK = 1024 * 1024;
+// Resumable-протокол Drive требует, чтобы НЕпоследний чанк был кратен 256КБ:
+// некратный Google фиксирует только до границы 256КБ, позиция уезжает — 503
+// «upload offset exceeds already uploaded size». Округляем вниз с запасом.
+const CHUNK_ALIGN = 256 * 1024;
 let maxChunk: number | null = null;
 let maxChunkProbe: Promise<number> | null = null;
 
@@ -51,7 +55,7 @@ export function getMaxChunk(): Promise<number> {
               data.maxChunk >= 256 * 1024 &&
               data.maxChunk <= 3 * 1024 * 1024
             ) {
-              n = Math.floor(data.maxChunk);
+              n = Math.floor(Math.floor(data.maxChunk) / CHUNK_ALIGN) * CHUNK_ALIGN;
             }
           } catch {
             // не JSON — считаем старым сервером
